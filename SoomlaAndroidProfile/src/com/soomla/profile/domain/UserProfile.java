@@ -22,6 +22,10 @@ import com.soomla.profile.data.PJSONConsts;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * A domain object that represents the user's profile attributes.
  */
@@ -31,22 +35,23 @@ public class UserProfile {
 
     /**
      * Constructor
-     *
-     * @param provider the provider which the user's data is associated to
+     *  @param provider the provider which the user's data is associated to
      * @param profileId the profile ID for the given provider
      * @param username the user's username as used with the given provider
      * @param email the user's email
      * @param firstName the user's first name
      * @param lastName the user's last name
+     * @param extra map of extra data specific to provider
      */
     public UserProfile(IProvider.Provider provider, String profileId, String username,
-                       String email, String firstName, String lastName) {
+                       String email, String firstName, String lastName, Map<String, Object> extra) {
         mProvider = provider;
         mProfileId = profileId;
         mUsername = username;
         mEmail = email;
         mFirstName = firstName;
         mLastName = lastName;
+        mExtra = extra;
     }
 
     /**
@@ -65,21 +70,23 @@ public class UserProfile {
         this.mEmail = jsonObject.getString(PJSONConsts.UP_EMAIL);
         this.mFirstName = jsonObject.getString(PJSONConsts.UP_FIRSTNAME);
         this.mLastName = jsonObject.getString(PJSONConsts.UP_LASTNAME);
-        try {
-            this.mAvatarLink = jsonObject.getString(PJSONConsts.UP_AVATAR);
-        } catch (JSONException ignored) {}
-        try {
-        this.mLocation = jsonObject.getString(PJSONConsts.UP_LOCATION);
-        } catch (JSONException ignored) {}
-        try {
-        this.mGender = jsonObject.getString(PJSONConsts.UP_GENDER);
-        } catch (JSONException ignored) {}
-        try {
-        this.mLanguage = jsonObject.getString(PJSONConsts.UP_LANGUAGE);
-        } catch (JSONException ignored) {}
-        try {
-        this.mBirthday = jsonObject.getString(PJSONConsts.UP_BIRTHDAY);
-        } catch (JSONException ignored) {}
+        this.mAvatarLink = jsonObject.optString(PJSONConsts.UP_AVATAR, null);
+        this.mLocation = jsonObject.optString(PJSONConsts.UP_LOCATION, null);
+        this.mGender = jsonObject.optString(PJSONConsts.UP_GENDER, null);
+        this.mLanguage = jsonObject.optString(PJSONConsts.UP_LANGUAGE, null);
+        this.mBirthday = jsonObject.optString(PJSONConsts.UP_BIRTHDAY, null);
+
+        JSONObject extraJson = jsonObject.optJSONObject(PJSONConsts.UP_EXTRA);
+        if (extraJson != null) {
+            HashMap<String, Object> map = new HashMap<String, Object>();
+            while (extraJson.keys().hasNext()) {
+                String key = extraJson.keys().next();
+                map.put(key, extraJson.get(key));
+            }
+            this.mExtra = map;
+        } else {
+            this.mExtra = Collections.emptyMap();
+        }
     }
 
     /**
@@ -102,6 +109,12 @@ public class UserProfile {
             jsonObject.put(PJSONConsts.UP_GENDER, mGender);
             jsonObject.put(PJSONConsts.UP_LANGUAGE, mLanguage);
             jsonObject.put(PJSONConsts.UP_BIRTHDAY, mBirthday);
+
+            JSONObject extraJson = new JSONObject();
+            for (String key : mExtra.keySet()) {
+                extraJson.put(key, mExtra.get(key));
+            }
+            jsonObject.put(PJSONConsts.UP_EXTRA, extraJson);
         } catch (JSONException e) {
             SoomlaUtils.LogError(TAG, "An error occurred while generating JSON object.");
         }
@@ -174,6 +187,13 @@ public class UserProfile {
         this.mBirthday = birthday;
     }
 
+    public Map<String, Object> getExtra() {
+        return mExtra;
+    }
+
+    public void setExtra(Map<String, Object> mExtra) {
+        this.mExtra = mExtra;
+    }
 
     /** Private Members **/
 
@@ -189,4 +209,6 @@ public class UserProfile {
     private String mGender;
     private String mLanguage;
     private String mBirthday;
+
+    private Map<String, Object> mExtra;
 }

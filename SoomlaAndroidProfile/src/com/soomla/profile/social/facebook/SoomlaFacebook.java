@@ -48,8 +48,7 @@ import com.sromku.simple.fb.listeners.OnProfileListener;
 import com.sromku.simple.fb.listeners.OnPublishListener;
 
 import java.lang.ref.WeakReference;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * Soomla wrapper for SimpleFacebook (itself a wrapper to Android FB SDK).
@@ -327,7 +326,7 @@ public class SoomlaFacebook implements ISocialProvider {
         }
 
         private void updateStory(String message, String name, String caption, String description, String link, String picture,
-                                final SocialCallbacks.SocialActionListener socialActionListener) {
+                                 final SocialCallbacks.SocialActionListener socialActionListener) {
             SoomlaUtils.LogDebug(TAG, "updateStory -- " + SimpleFacebook.getInstance().toString());
             Feed feed = new Feed.Builder()
                     .setMessage(message)
@@ -434,7 +433,7 @@ public class SoomlaFacebook implements ISocialProvider {
                     for (Profile profile : response) {
                         userProfiles.add(new UserProfile(
                                 RefProvider, profile.getId(), profile.getUsername(), profile.getEmail(),
-                                profile.getFirstName(), profile.getLastName()));
+                                profile.getFirstName(), profile.getLastName(), Collections.<String, Object>emptyMap()));
                     }
                     contactsListener.success(userProfiles);
                     clearListeners();
@@ -583,9 +582,12 @@ public class SoomlaFacebook implements ISocialProvider {
             @Override
             public void onComplete(Profile response) {
                 super.onComplete(response);
+                Map<String, Object> extra = new HashMap<String, Object>();
+                extra.put("accessToken", SimpleFacebook.getInstance().getSession().getAccessToken());
+                extra.put("expirationDate", SimpleFacebook.getInstance().getSession().getExpirationDate());
                 final UserProfile userProfile = new UserProfile(getProvider(),
                         response.getId(), response.getName(), response.getEmail(),
-                        response.getFirstName(), response.getLastName());
+                        response.getFirstName(), response.getLastName(), extra);
                 userProfile.setAvatarLink(response.getPicture());
                 // todo: verify extra permissions for these
 //                    userProfile.setBirthday(response.getBirthday());
