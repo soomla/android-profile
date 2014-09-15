@@ -14,19 +14,15 @@
  *   limitations under the License.
  */
 
-/**
- * Created by oriargov on 5/26/14.
- */
-
 package com.soomla.profile.events;
 
 /**
- * The event fired when the profile module is initialized
+ * The event which is fired when the market app page is opened
  */
-public class ProfileInitializedEvent {
+public class MarketAppPageOpened {
     /**
      * Constructor
      */
-    public ProfileInitializedEvent() {
+    public MarketAppPageOpened() {
     }
 }
