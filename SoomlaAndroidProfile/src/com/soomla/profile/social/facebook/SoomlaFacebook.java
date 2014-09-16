@@ -584,7 +584,7 @@ public class SoomlaFacebook implements ISocialProvider {
                 super.onComplete(response);
                 Map<String, Object> extra = new HashMap<String, Object>();
                 extra.put("accessToken", SimpleFacebook.getInstance().getSession().getAccessToken());
-                extra.put("expirationDate", SimpleFacebook.getInstance().getSession().getExpirationDate());
+                extra.put("expirationDate", SimpleFacebook.getInstance().getSession().getExpirationDate().getTime());
                 final UserProfile userProfile = new UserProfile(getProvider(),
                         response.getId(), response.getName(), response.getEmail(),
                         response.getFirstName(), response.getLastName(), extra);
