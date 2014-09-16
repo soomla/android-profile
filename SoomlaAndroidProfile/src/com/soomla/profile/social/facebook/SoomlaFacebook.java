@@ -48,6 +48,8 @@ import com.sromku.simple.fb.listeners.OnProfileListener;
 import com.sromku.simple.fb.listeners.OnPublishListener;
 
 import java.lang.ref.WeakReference;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
 import java.util.*;
 
 /**
@@ -582,9 +584,12 @@ public class SoomlaFacebook implements ISocialProvider {
             @Override
             public void onComplete(Profile response) {
                 super.onComplete(response);
+
+                String isoTime = getIsoTime(SimpleFacebook.getInstance().getSession().getExpirationDate());
+
                 Map<String, Object> extra = new HashMap<String, Object>();
                 extra.put("accessToken", SimpleFacebook.getInstance().getSession().getAccessToken());
-                extra.put("expirationDate", SimpleFacebook.getInstance().getSession().getExpirationDate().getTime());
+                extra.put("expirationDate", isoTime);
                 final UserProfile userProfile = new UserProfile(getProvider(),
                         response.getId(), response.getName(), response.getEmail(),
                         response.getFirstName(), response.getLastName(), extra);
@@ -612,6 +617,13 @@ public class SoomlaFacebook implements ISocialProvider {
                 userProfileListener.fail("onFail: " + reason);
             }
         });
+    }
+
+    private static String getIsoTime(Date date) {
+        TimeZone tz = TimeZone.getTimeZone("UTC");
+        DateFormat df = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm'Z'");
+        df.setTimeZone(tz);
+        return df.format(date);
     }
 
     /**
