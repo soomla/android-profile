@@ -5,4 +5,4 @@ script:
     - cd submodules/soomla-android-core
     - ant -buildfile soomla-android-core.xml -Dsoomla.filename="SoomlaAndroidCore" all
     - cd ../../SoomlaAndroidProfile
-    - ant -buildfile android-profile.xml -Dsoomla.filename="SoomlaAndroidProfile" all
+    - ant -buildfile android-profile.xml -Dsoomla.filename="AndroidProfile" all
