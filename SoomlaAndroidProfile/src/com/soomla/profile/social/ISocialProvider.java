@@ -19,12 +19,13 @@ package com.soomla.profile.social;
 import android.app.Activity;
 
 import com.soomla.profile.auth.IAuthProvider;
+import com.soomla.profile.domain.IProvider;
 
 /**
  * A provider that exposes social capabilities such as sharing, fetching user
  * feeds, uploading images etc.
  */
-public interface ISocialProvider extends IAuthProvider {
+public interface ISocialProvider extends IProvider {
 
     /**
      * Shares the given status to the user's feed

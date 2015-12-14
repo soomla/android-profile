@@ -29,6 +29,7 @@ import android.text.TextUtils;
 import com.soomla.SoomlaApp;
 import com.soomla.SoomlaUtils;
 import com.soomla.profile.auth.AuthCallbacks;
+import com.soomla.profile.auth.IAuthProvider;
 import com.soomla.profile.domain.UserProfile;
 import com.soomla.profile.social.ISocialProvider;
 import com.soomla.profile.social.SocialCallbacks;
@@ -54,7 +55,7 @@ import java.util.*;
  * This class works by creating a transparent activity (SoomlaFBActivity) and working through it.
  * This is required to correctly integrate with FB activity lifecycle events
  */
-public class SoomlaFacebook implements ISocialProvider {
+public class SoomlaFacebook implements IAuthProvider, ISocialProvider {
 
     private static final String TAG = "SOOMLA SoomlaFacebook";
 

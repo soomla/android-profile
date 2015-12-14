@@ -46,6 +46,7 @@ import com.google.android.gms.plus.model.people.PersonBuffer;
 import com.soomla.Soomla;
 import com.soomla.SoomlaUtils;
 import com.soomla.profile.auth.AuthCallbacks;
+import com.soomla.profile.auth.IAuthProvider;
 import com.soomla.profile.domain.UserProfile;
 import com.soomla.profile.social.ISocialProvider;
 import com.soomla.profile.social.SocialCallbacks;
@@ -63,7 +64,7 @@ import java.util.Map;
  * This class works by creating a transparent activity (SoomlaGooglePlusActivity) and working through it.
  * This is required to correctly integrate with GooglePlus activity lifecycle events
  */
-public class SoomlaGooglePlus implements ISocialProvider{
+public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
 
     private static final String TAG = "SOOMLA SoomlaGoogle";
 

@@ -16,27 +16,42 @@
 
 package com.soomla.profile;
 
+import android.annotation.TargetApi;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
+import android.content.ContextWrapper;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.graphics.Bitmap;
 
 import android.net.Uri;
-import android.os.Environment;
+import android.os.*;
 import android.view.View;
 import com.soomla.BusProvider;
 import com.soomla.SoomlaApp;
 import com.soomla.SoomlaMarketUtils;
 import com.soomla.SoomlaUtils;
+import com.soomla.data.KeyValueStorage;
+import com.soomla.profile.auth.AuthCallbacks;
+import com.soomla.profile.auth.IAuthProvider;
+import com.soomla.profile.data.UserProfileStorage;
 import com.soomla.profile.domain.IProvider;
 import com.soomla.profile.domain.UserProfile;
 import com.soomla.profile.events.UserRatingEvent;
 import com.soomla.profile.events.ProfileInitializedEvent;
+import com.soomla.profile.events.auth.*;
+import com.soomla.profile.events.social.*;
 import com.soomla.profile.exceptions.ProviderNotFoundException;
+import com.soomla.profile.social.ISocialProvider;
+import com.soomla.profile.social.SocialCallbacks;
 import com.soomla.rewards.Reward;
 
+import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -49,6 +64,7 @@ import java.util.Map;
 public class SoomlaProfile {
 
     public static final String VERSION = "1.1.9";
+    private static final String DB_KEY_PREFIX = "soomla.profile";
 
     /**
      * see {@link #initialize(Activity, boolean, Map)}
@@ -97,8 +113,11 @@ public class SoomlaProfile {
             return false;
         }
 
-        mAuthController = new AuthController(usingExternalProvider, providerParams);
-        mSocialController = new SocialController(usingExternalProvider, providerParams);
+        mProviderManager = new ProviderManager(providerParams,
+                "com.soomla.profile.social.facebook.SoomlaFacebook",
+                "com.soomla.profile.social.google.SoomlaGooglePlus",
+                "com.soomla.profile.social.twitter.SoomlaTwitter"
+        );
 
         mInitialized = true;
 
@@ -109,10 +128,79 @@ public class SoomlaProfile {
                     "You want to use `autoLogin`, but have not provided the `activity`. Skipping auto login");
             return false;
         }
-        mAuthController.settleAutoLogin(activity);
-        mSocialController.settleAutoLogin(activity);
+        this.settleAutoLogin(activity);
 
         return true;
+    }
+
+    public void settleAutoLogin(Activity activity) {
+        List<IAuthProvider> authProviders = mProviderManager.getAllAuthProviders();
+        for (IAuthProvider authProvider : authProviders) {
+            if (authProvider.isAutoLogin()) {
+                final IProvider.Provider provider = authProvider.getProvider();
+                if (this.wasLoggedInWithProvider(provider)) {
+                    final String payload = "";
+                    final Reward reward = null;
+                    if (authProvider.isLoggedIn()) {
+                        setLoggedInForProvider(provider, false);
+                        BusProvider.getInstance().post(new LoginStartedEvent(provider, true, payload));
+                        authProvider.getUserProfile(new AuthCallbacks.UserProfileListener() {
+                            @Override
+                            public void success(UserProfile userProfile) {
+                                UserProfileStorage.setUserProfile(userProfile);
+                                setLoggedInForProvider(provider, true);
+                                BusProvider.getInstance().post(new LoginFinishedEvent(userProfile, true, payload));
+                            }
+
+                            @Override
+                            public void fail(String message) {
+                                BusProvider.getInstance().post(new LoginFailedEvent(provider, message, true, payload));
+                            }
+                        });
+                    } else {
+                        login(activity, provider, true, payload, reward);
+                    }
+                }
+            }
+        }
+    }
+
+    private void afterLogin(final IProvider.Provider provider,
+                            IAuthProvider authProvider, final boolean autoLogin, final String payload, final Reward reward) {
+        authProvider.getUserProfile(new AuthCallbacks.UserProfileListener() {
+            @Override
+            public void success(UserProfile userProfile) {
+                UserProfileStorage.setUserProfile(userProfile);
+                setLoggedInForProvider(provider, true);
+                BusProvider.getInstance().post(new LoginFinishedEvent(userProfile, autoLogin, payload));
+
+                if (reward != null) {
+                    reward.give();
+                }
+            }
+
+            @Override
+            public void fail(String message) {
+                BusProvider.getInstance().post(new LoginFailedEvent(provider, message, autoLogin, payload));
+            }
+        });
+    }
+
+    private void setLoggedInForProvider(IProvider.Provider provider, boolean value) {
+        String key = getLoggedInStorageKeyForProvider(provider);
+        if (value) {
+            KeyValueStorage.setValue(key, "true");
+        } else {
+            KeyValueStorage.deleteKeyValue(key);
+        }
+    }
+
+    private boolean wasLoggedInWithProvider(IProvider.Provider provider) {
+        return "true".equals(KeyValueStorage.getValue(getLoggedInStorageKeyForProvider(provider)));
+    }
+
+    private String getLoggedInStorageKeyForProvider(IProvider.Provider provider) {
+        return String.format("%s.%s.%s", DB_KEY_PREFIX, provider.toString(), "loggedIn");
     }
 
     /**
@@ -152,11 +240,47 @@ public class SoomlaProfile {
      */
     public void login(Activity activity, final IProvider.Provider provider,
                       String payload, final Reward reward) throws ProviderNotFoundException {
-        try {
-            mAuthController.login(activity, provider, false, payload, reward);
-        } catch (ProviderNotFoundException e) {
-            mSocialController.login(activity, provider, false, payload, reward);
-        }
+        this.login(activity, provider, false, payload, reward);
+    }
+
+    /**
+     * Login to the given provider and grant the user a reward.
+     *
+     * @param activity The parent activity
+     * @param provider The provider to use
+     * @param autoLogin Allows to login automatically after launch
+     * @param payload  a String to receive when the function returns.
+     * @param reward   The reward to give the user for logging in.
+     * @throws ProviderNotFoundException if the supplied provider is not
+     *                                   supported by the framework
+     */
+    public void login(final Activity activity, final IProvider.Provider provider, final boolean autoLogin,
+                      final String payload, final Reward reward) throws ProviderNotFoundException {
+        final IAuthProvider authProvider = mProviderManager.getAuthProvider(provider);
+
+        runOnMainThread(new Runnable() {
+            @Override
+            public void run() {
+                setLoggedInForProvider(provider, false);
+                BusProvider.getInstance().post(new LoginStartedEvent(provider, autoLogin, payload));
+                authProvider.login(activity, new AuthCallbacks.LoginListener() {
+                    @Override
+                    public void success(final IProvider.Provider provider) {
+                        afterLogin(provider, authProvider, autoLogin, payload, reward);
+                    }
+
+                    @Override
+                    public void fail(String message) {
+                        BusProvider.getInstance().post(new LoginFailedEvent(provider, message, autoLogin, payload));
+                    }
+
+                    @Override
+                    public void cancel() {
+                        BusProvider.getInstance().post(new LoginCancelledEvent(provider, autoLogin, payload));
+                    }
+                });
+            }
+        });
     }
 
     /**
@@ -172,11 +296,7 @@ public class SoomlaProfile {
      */
     @Deprecated
     public boolean isLoggedIn(Activity activity, final IProvider.Provider provider) throws ProviderNotFoundException {
-        try {
-            return mAuthController.isLoggedIn(activity, provider);
-        } catch (ProviderNotFoundException e) {
-            return mSocialController.isLoggedIn(activity, provider);
-        }
+        return this.isLoggedIn(provider);
     }
 
     /**
@@ -190,11 +310,8 @@ public class SoomlaProfile {
      *                                   supported by the framework
      */
     public boolean isLoggedIn(final IProvider.Provider provider) throws ProviderNotFoundException {
-        try {
-            return mAuthController.isLoggedIn(provider);
-        } catch (ProviderNotFoundException e) {
-            return mSocialController.isLoggedIn(provider);
-        }
+        final IAuthProvider authProvider = mProviderManager.getAuthProvider(provider);
+        return authProvider.isLoggedIn();
     }
 
     /**
@@ -205,11 +322,38 @@ public class SoomlaProfile {
      *                                   supported by the framework
      */
     public void logout(final IProvider.Provider provider) throws ProviderNotFoundException {
-        try {
-            mAuthController.logout(provider);
-        } catch (ProviderNotFoundException e) {
-            mSocialController.logout(provider);
+        final IAuthProvider authProvider = mProviderManager.getAuthProvider(provider);
+        final UserProfile userProfile = getStoredUserProfile(provider);
+
+        if (!isLoggedIn(provider) && userProfile == null) {
+            return;
         }
+
+        BusProvider.getInstance().post(new LogoutStartedEvent(provider));
+        setLoggedInForProvider(provider, false);
+
+        if (!isLoggedIn(provider)) {
+            UserProfileStorage.removeUserProfile(userProfile);
+            BusProvider.getInstance().post(new LogoutFinishedEvent(provider));
+            return;
+        }
+
+        authProvider.logout(new AuthCallbacks.LogoutListener() {
+            @Override
+            public void success() {
+                if (userProfile != null) {
+                    UserProfileStorage.removeUserProfile(userProfile);
+                }
+                // if caller needs stuff from the user, they should get it before logout
+                // pass only the provider here
+                BusProvider.getInstance().post(new LogoutFinishedEvent(provider));
+            }
+
+            @Override
+            public void fail(String message) {
+                BusProvider.getInstance().post(new LogoutFailedEvent(provider, message));
+            }
+        });
     }
 
     /**
@@ -232,11 +376,11 @@ public class SoomlaProfile {
      * @return The user profile
      */
     public UserProfile getStoredUserProfile(IProvider.Provider provider) {
-        UserProfile userProfile = mAuthController.getStoredUserProfile(provider);
-        if (userProfile != null)
-            return userProfile;
-
-        return mSocialController.getStoredUserProfile(provider);
+        UserProfile userProfile = UserProfileStorage.getUserProfile(provider);
+        if (userProfile == null) {
+            return null;
+        }
+        return UserProfileStorage.getUserProfile(provider);
     }
 
     /**
@@ -263,14 +407,15 @@ public class SoomlaProfile {
      *                                   supported by the framework
      */
     public void updateStatus(IProvider.Provider provider, String status, String payload, final Reward reward) throws ProviderNotFoundException {
-        mSocialController.updateStatus(provider, status, payload, reward, null, null);
+        final ISocialProvider socialProvider = mProviderManager.getSocialProvider(provider);
+        internalUpdateStatus(socialProvider, provider, status, payload, reward);
     }
 
     /**
      * Overloaded version of {@link #updateStatusWithConfirmation(com.soomla.profile.domain.IProvider.Provider, String, String, com.soomla.rewards.Reward, android.app.Activity, String)} without "customMessage"
      */
     public void updateStatusWithConfirmation(IProvider.Provider provider, String status, String payload, final Reward reward, final Activity activity) throws ProviderNotFoundException {
-        mSocialController.updateStatus(provider, status, payload, reward, activity, null);
+        this.updateStatusWithConfirmation(provider, status, payload, reward, activity, null);
     }
 
     /**
@@ -285,8 +430,36 @@ public class SoomlaProfile {
      * @throws ProviderNotFoundException if the supplied provider is not
      *                                   supported by the framework
      */
-    public void updateStatusWithConfirmation(IProvider.Provider provider, String status, String payload, final Reward reward, final Activity activity, final String customMessage) throws ProviderNotFoundException {
-        mSocialController.updateStatus(provider, status, payload, reward, activity, customMessage);
+    public void updateStatusWithConfirmation(final IProvider.Provider provider, final String status, final String payload, final Reward reward, final Activity activity, final String customMessage) throws ProviderNotFoundException {
+        final ISocialProvider socialProvider = mProviderManager.getSocialProvider(provider);
+
+        if (activity != null) {
+            final String message = customMessage != null ? customMessage :
+                    String.format("Are you sure you want to publish this message to %s: %s?",
+                            provider.toString(), status);
+
+            activity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    new AlertDialog.Builder(activity)
+                            .setIcon(android.R.drawable.ic_dialog_alert)
+                            .setTitle("Confirmation")
+                            .setMessage(message)
+                            .setPositiveButton("yes", new DialogInterface.OnClickListener() {
+
+                                @Override
+                                public void onClick(DialogInterface dialog, int which) {
+                                    internalUpdateStatus(socialProvider, provider, status, payload, reward);
+                                }
+
+                            })
+                            .setNegativeButton("no", null)
+                            .show();
+                }
+            });
+        } else {
+            internalUpdateStatus(socialProvider, provider, status, payload, reward);
+        }
     }
 
     /**
@@ -314,8 +487,26 @@ public class SoomlaProfile {
      * @throws ProviderNotFoundException if the supplied provider is not
      *                                   supported by the framework
      */
-    public void updateStatusDialog(IProvider.Provider provider, String link, String payload, final Reward reward) throws ProviderNotFoundException {
-        mSocialController.updateStatusDialog(provider, link, payload, reward);
+    public void updateStatusDialog(final IProvider.Provider provider, final String link, final String payload, final Reward reward) throws ProviderNotFoundException {
+        final ISocialProvider socialProvider = mProviderManager.getSocialProvider(provider);
+
+        final ISocialProvider.SocialActionType updateStatusType = ISocialProvider.SocialActionType.UPDATE_STATUS;
+        BusProvider.getInstance().post(new SocialActionStartedEvent(provider, updateStatusType, payload));
+        socialProvider.updateStatusDialog(link, new SocialCallbacks.SocialActionListener() {
+            @Override
+            public void success() {
+                BusProvider.getInstance().post(new SocialActionFinishedEvent(provider, updateStatusType, payload));
+
+                if (reward != null) {
+                    reward.give();
+                }
+            }
+
+            @Override
+            public void fail(String message) {
+                BusProvider.getInstance().post(new SocialActionFailedEvent(provider, updateStatusType, message, payload));
+            }
+        });
     }
 
     /**
@@ -366,7 +557,7 @@ public class SoomlaProfile {
                             String description, String link, String picture, String payload,
                             final Reward reward) throws ProviderNotFoundException {
 
-        mSocialController.updateStory(provider, message, name, caption, description, link, picture, payload, reward, null, null);
+        this.updateStoryWithConfirmation(provider, message, name, caption, description, link, picture, payload, reward, null, null);
     }
 
     /**
@@ -376,7 +567,7 @@ public class SoomlaProfile {
                             String description, String link, String picture, String payload,
                             final Reward reward, final Activity activity) throws ProviderNotFoundException {
 
-        mSocialController.updateStory(provider, message, name, caption, description, link, picture, payload, reward, activity, null);
+        this.updateStoryWithConfirmation(provider, message, name, caption, description, link, picture, payload, reward, activity, null);
     }
 
     /**
@@ -400,11 +591,36 @@ public class SoomlaProfile {
      * @throws ProviderNotFoundException if the supplied provider is not
      *                                   supported by the framework
      */
-    public void updateStoryWithConfirmation(IProvider.Provider provider, String message, String name, String caption,
-                            String description, String link, String picture, String payload,
+    public void updateStoryWithConfirmation(final IProvider.Provider provider, final String message, final String name, final String caption,
+                            final String description, final String link, final String picture, final String payload,
                             final Reward reward, final Activity activity, final String customMessage) throws ProviderNotFoundException {
 
-        mSocialController.updateStory(provider, message, name, caption, description, link, picture, payload, reward, activity, customMessage);
+        final ISocialProvider socialProvider = mProviderManager.getSocialProvider(provider);
+
+        if (activity != null) {
+            final String messageToShow = customMessage != null ? customMessage :
+                    String.format("Are you sure you want to publish to %s?", provider.toString());
+
+            activity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    new AlertDialog.Builder(activity)
+                            .setIcon(android.R.drawable.ic_dialog_alert)
+                            .setTitle("Confirmation")
+                            .setMessage(messageToShow)
+                            .setPositiveButton("yes", new DialogInterface.OnClickListener() {
+                                @Override
+                                public void onClick(DialogInterface dialog, int which) {
+                                    internalUpdateStory(provider, message, name, caption, description, link, picture, payload, reward, socialProvider);
+                                }
+                            })
+                            .setNegativeButton("no", null)
+                            .show();
+                }
+            });
+        } else {
+            internalUpdateStory(provider, message, name, caption, description, link, picture, payload, reward, socialProvider);
+        }
     }
 
     /**
@@ -451,10 +667,30 @@ public class SoomlaProfile {
      * @throws ProviderNotFoundException if the supplied provider is not
      *                                   supported by the framework
      */
-    public void updateStoryDialog(IProvider.Provider provider, String name, String caption,
-                                  String description, String link, String picture, String payload,
+    public void updateStoryDialog(final IProvider.Provider provider, final String name, final String caption,
+                                  final String description, final String link, final String picture, final String payload,
                                   final Reward reward) throws ProviderNotFoundException {
-        mSocialController.updateStoryDialog(provider, name, caption, description, link, picture, payload, reward);
+        final ISocialProvider socialProvider = mProviderManager.getSocialProvider(provider);
+
+        final ISocialProvider.SocialActionType updateStoryType = ISocialProvider.SocialActionType.UPDATE_STORY;
+        BusProvider.getInstance().post(new SocialActionStartedEvent(provider, updateStoryType, payload));
+        socialProvider.updateStoryDialog(name, caption, description, link, picture,
+                new SocialCallbacks.SocialActionListener() {
+                    @Override
+                    public void success() {
+                        BusProvider.getInstance().post(new SocialActionFinishedEvent(provider, updateStoryType, payload));
+
+                        if (reward != null) {
+                            reward.give();
+                        }
+                    }
+
+                    @Override
+                    public void fail(String message) {
+                        BusProvider.getInstance().post(new SocialActionFailedEvent(provider, updateStoryType, message, payload));
+                    }
+                }
+        );
     }
 
     /**
@@ -474,7 +710,40 @@ public class SoomlaProfile {
                             String message, String fileName, Bitmap bitmap, int jpegQuality,
                             String payload, final Reward reward) throws ProviderNotFoundException {
 
-        mSocialController.uploadImage(provider, message, fileName, bitmap, jpegQuality, payload, reward, null, null);
+        this.uploadImage(provider, message, fileName, bitmap, jpegQuality, payload, reward, null, null);
+    }
+
+    @TargetApi(Build.VERSION_CODES.CUPCAKE)
+    private void uploadImage(final IProvider.Provider provider,
+                            final String message, final String fileName, final Bitmap bitmap, final int jpegQuality,
+                            final String payload, final Reward reward, final Activity activity, String customMessage) throws ProviderNotFoundException {
+
+        final ISocialProvider socialProvider = mProviderManager.getSocialProvider(provider);
+
+        if (activity != null) {
+            final String messageToShow = customMessage != null ? customMessage :
+                    String.format("Are you sure you want to upload image to %s?", provider.toString());
+
+            activity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    new AlertDialog.Builder(activity)
+                            .setIcon(android.R.drawable.ic_dialog_alert)
+                            .setTitle("Confirmation")
+                            .setMessage(messageToShow)
+                            .setPositiveButton("yes", new DialogInterface.OnClickListener() {
+                                @Override
+                                public void onClick(DialogInterface dialog, int which) {
+                                    internalUploadImage(provider, message, fileName, bitmap, jpegQuality, payload, reward, socialProvider);
+                                }
+                            })
+                            .setNegativeButton("no", null)
+                            .show();
+                }
+            });
+        } else {
+            internalUploadImage(provider, message, fileName, bitmap, jpegQuality, payload, reward, socialProvider);
+        }
     }
 
     /**
@@ -495,7 +764,7 @@ public class SoomlaProfile {
                                             String message, String fileName, Bitmap bitmap, int jpegQuality,
                                             String payload, final Reward reward, Activity activity, String customMessage) throws ProviderNotFoundException {
 
-        mSocialController.uploadImage(provider, message, fileName, bitmap, jpegQuality, payload, reward, activity, customMessage);
+        this.uploadImage(provider, message, fileName, bitmap, jpegQuality, payload, reward, activity, customMessage);
     }
 
     /**
@@ -504,7 +773,7 @@ public class SoomlaProfile {
     public void uploadImageWithConfirmation(IProvider.Provider provider,
                             String message, String fileName, Bitmap bitmap, int jpegQuality,
                             String payload, final Reward reward) throws ProviderNotFoundException {
-        mSocialController.uploadImage(provider, message, fileName, bitmap, jpegQuality, payload, reward, null, null);
+        this.uploadImage(provider, message, fileName, bitmap, jpegQuality, payload, reward, null, null);
     }
 
     /**
@@ -519,7 +788,12 @@ public class SoomlaProfile {
      *                                   supported by the framework
      */
     public void uploadImage(IProvider.Provider provider, String message, File file,  String payload, final Reward reward) throws ProviderNotFoundException{
-        mSocialController.uploadImage(provider, message, file, payload, reward);
+        if (file == null){
+            SoomlaUtils.LogError(TAG, "(uploadImage) File is null!");
+            return;
+        }
+
+        this.uploadImage(provider, message, file.getAbsolutePath(), payload, reward);
     }
 
     /**
@@ -553,7 +827,8 @@ public class SoomlaProfile {
     public void uploadImage(IProvider.Provider provider,
                             String message, String filePath, String payload,
                             final Reward reward) throws ProviderNotFoundException {
-        mSocialController.uploadImage(provider, message, filePath, payload, reward, null, null);
+        final ISocialProvider socialProvider = mProviderManager.getSocialProvider(provider);
+        internalUploadImage(provider, message, filePath, payload, reward, socialProvider);
     }
 
     /**
@@ -562,7 +837,7 @@ public class SoomlaProfile {
     public void uploadImageWithConfirmation(IProvider.Provider provider,
                             String message, String filePath, String payload,
                             final Reward reward, Activity activity) throws ProviderNotFoundException {
-        mSocialController.uploadImage(provider, message, filePath, payload, reward, activity, null);
+        this.uploadImageWithConfirmation(provider, message, filePath, payload, reward, activity, null);
     }
 
     /**
@@ -578,10 +853,35 @@ public class SoomlaProfile {
      * @throws ProviderNotFoundException if the supplied provider is not
      *                                   supported by the framework
      */
-    public void uploadImageWithConfirmation(IProvider.Provider provider,
-                            String message, String filePath, String payload,
-                            final Reward reward, Activity activity, String customMessage) throws ProviderNotFoundException {
-        mSocialController.uploadImage(provider, message, filePath, payload, reward, activity, customMessage);
+    public void uploadImageWithConfirmation(final IProvider.Provider provider,
+                            final String message, final String filePath, final String payload,
+                            final Reward reward, final Activity activity, final String customMessage) throws ProviderNotFoundException {
+        final ISocialProvider socialProvider = mProviderManager.getSocialProvider(provider);
+
+        if (activity != null) {
+            final String messageToShow = customMessage != null ? customMessage :
+                    String.format("Are you sure you want to upload image to %s?", provider.toString());
+
+            activity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    new AlertDialog.Builder(activity)
+                            .setIcon(android.R.drawable.ic_dialog_alert)
+                            .setTitle("Confirmation")
+                            .setMessage(messageToShow)
+                            .setPositiveButton("yes", new DialogInterface.OnClickListener() {
+                                @Override
+                                public void onClick(DialogInterface dialog, int which) {
+                                    internalUploadImage(provider, message, filePath, payload, reward, socialProvider);
+                                }
+                            })
+                            .setNegativeButton("no", null)
+                            .show();
+                }
+            });
+        } else {
+            internalUploadImage(provider, message, filePath, payload, reward, socialProvider);
+        }
     }
 
     /**
@@ -610,7 +910,7 @@ public class SoomlaProfile {
      */
     public void uploadCurrentScreenshot(final Activity activity, IProvider.Provider provider, String title, String message, String payload, Reward reward)
             throws ProviderNotFoundException {
-        mSocialController.uploadImage(provider, message, takeScreenshot(activity), payload, reward);
+        this.uploadImage(provider, message, takeScreenshot(activity), payload, reward);
     }
 
     /**
@@ -683,8 +983,27 @@ public class SoomlaProfile {
      * @throws ProviderNotFoundException if the supplied provider is not
      *                                   supported by the framework
      */
-    public void getContacts(IProvider.Provider provider, boolean fromStart, String payload, final Reward reward) throws ProviderNotFoundException {
-        mSocialController.getContacts(provider, fromStart, payload, reward);
+    public void getContacts(final IProvider.Provider provider, final boolean fromStart, final String payload, final Reward reward) throws ProviderNotFoundException {
+        final ISocialProvider socialProvider = mProviderManager.getSocialProvider(provider);
+
+        final ISocialProvider.SocialActionType getContactsType = ISocialProvider.SocialActionType.GET_CONTACTS;
+        BusProvider.getInstance().post(new GetContactsStartedEvent(provider, getContactsType, fromStart, payload));
+        socialProvider.getContacts(fromStart, new SocialCallbacks.ContactsListener() {
+                    @Override
+                    public void success(List<UserProfile> contacts, boolean hasMore) {
+                        BusProvider.getInstance().post(new GetContactsFinishedEvent(provider, getContactsType, contacts, payload, hasMore));
+
+                        if (reward != null) {
+                            reward.give();
+                        }
+                    }
+
+                    @Override
+                    public void fail(String message) {
+                        BusProvider.getInstance().post(new GetContactsFailedEvent(provider, getContactsType, message, fromStart, payload));
+                    }
+                }
+        );
     }
 
     /**
@@ -708,8 +1027,27 @@ public class SoomlaProfile {
      * @param reward   The reward to grant
      * @throws ProviderNotFoundException if the supplied provider is not supported by the framework
      */
-    public void getFeed(IProvider.Provider provider, Boolean fromStart, String payload, final Reward reward) throws ProviderNotFoundException {
-        mSocialController.getFeed(provider, fromStart, payload, reward);
+    public void getFeed(final IProvider.Provider provider, final Boolean fromStart, final String payload, final Reward reward) throws ProviderNotFoundException {
+        final ISocialProvider socialProvider = mProviderManager.getSocialProvider(provider);
+
+        final ISocialProvider.SocialActionType getFeedType = ISocialProvider.SocialActionType.GET_FEED;
+        BusProvider.getInstance().post(new GetFeedStartedEvent(provider, getFeedType, fromStart, payload));
+        socialProvider.getFeed(fromStart, new SocialCallbacks.FeedListener() {
+                    @Override
+                    public void success(List<String> feedPosts, boolean hasMore) {
+                        BusProvider.getInstance().post(new GetFeedFinishedEvent(provider, getFeedType, feedPosts, payload, hasMore));
+
+                        if (reward != null) {
+                            reward.give();
+                        }
+                    }
+
+                    @Override
+                    public void fail(String message) {
+                        BusProvider.getInstance().post(new GetFeedFailedEvent(provider, getFeedType, message, fromStart, payload));
+                    }
+                }
+        );
     }
 
     /**
@@ -735,8 +1073,31 @@ public class SoomlaProfile {
      * @param reward   The reward to grant
      * @throws ProviderNotFoundException if the supplied provider is not supported by the framework
      */
-    public void invite(final Activity activity, IProvider.Provider provider, String inviteMessage, String dialogTitle, String payload, final Reward reward) {
-        mSocialController.invite(activity, provider, inviteMessage, dialogTitle, payload, reward);
+    public void invite(final Activity activity, final IProvider.Provider provider, final String inviteMessage, final String dialogTitle, final String payload, final Reward reward) {
+        final ISocialProvider socialProvider = mProviderManager.getSocialProvider(provider);
+
+        final ISocialProvider.SocialActionType inviteType = ISocialProvider.SocialActionType.INVITE;
+        BusProvider.getInstance().post(new InviteStartedEvent(provider, inviteType, payload));
+        socialProvider.invite(activity, inviteMessage, dialogTitle, new SocialCallbacks.InviteListener() {
+            @Override
+            public void success(String requestId, List<String> invitedIds) {
+                BusProvider.getInstance().post(new InviteFinishedEvent(provider, inviteType, requestId, invitedIds, payload));
+
+                if (reward != null) {
+                    reward.give();
+                }
+            }
+
+            @Override
+            public void fail(String message) {
+                BusProvider.getInstance().post(new InviteFailedEvent(provider, inviteType, message, payload));
+            }
+
+            @Override
+            public void cancel() {
+                BusProvider.getInstance().post(new InviteCancelledEvent(provider, inviteType, payload));
+            }
+        });
     }
 
     /**
@@ -752,7 +1113,12 @@ public class SoomlaProfile {
     public void like(final Activity activity, final IProvider.Provider provider,
                      String pageId,
                      final Reward reward) throws ProviderNotFoundException {
-        mSocialController.like(activity, provider, pageId, reward);
+        final ISocialProvider socialProvider = mProviderManager.getSocialProvider(provider);
+        socialProvider.like(activity, pageId);
+
+        if (reward != null) {
+            reward.give();
+        }
     }
 
     /**
@@ -786,12 +1152,194 @@ public class SoomlaProfile {
         SoomlaApp.getAppContext().startActivity(chooser);
     }
 
+    /*
+     * Helper methods
+     */
+
+    private final Handler mainThread = new Handler(Looper.getMainLooper());
+    protected void runOnMainThread(Runnable toRun) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            toRun.run();
+        } else {
+            mainThread.post(toRun);
+        }
+    }
+
+    private void internalUpdateStatus(ISocialProvider socialProvider, final IProvider.Provider provider, String status, final String payload, final Reward reward) {
+        final ISocialProvider.SocialActionType updateStatusType = ISocialProvider.SocialActionType.UPDATE_STATUS;
+        BusProvider.getInstance().post(new SocialActionStartedEvent(provider, updateStatusType, payload));
+        socialProvider.updateStatus(status, new SocialCallbacks.SocialActionListener() {
+            @Override
+            public void success() {
+                BusProvider.getInstance().post(new SocialActionFinishedEvent(provider, updateStatusType, payload));
+
+                if (reward != null) {
+                    reward.give();
+                }
+            }
+
+            @Override
+            public void fail(String message) {
+                BusProvider.getInstance().post(new SocialActionFailedEvent(provider, updateStatusType, message, payload));
+            }
+        });
+    }
+
+    private void internalUpdateStory(final IProvider.Provider provider, String message, String name, String caption, String description, String link, String picture, final String payload, final Reward reward, ISocialProvider socialProvider) {
+        final ISocialProvider.SocialActionType updateStoryType = ISocialProvider.SocialActionType.UPDATE_STORY;
+        BusProvider.getInstance().post(new SocialActionStartedEvent(provider, updateStoryType, payload));
+        socialProvider.updateStory(message, name, caption, description, link, picture,
+                new SocialCallbacks.SocialActionListener() {
+                    @Override
+                    public void success() {
+                        BusProvider.getInstance().post(new SocialActionFinishedEvent(provider, updateStoryType, payload));
+
+                        if (reward != null) {
+                            reward.give();
+                        }
+                    }
+
+                    @Override
+                    public void fail(String message) {
+                        BusProvider.getInstance().post(new SocialActionFailedEvent(provider, updateStoryType, message, payload));
+                    }
+                }
+        );
+    }
+
+    private void internalUploadImage(final IProvider.Provider provider, String message, String filePath, final String payload, final Reward reward, ISocialProvider socialProvider) {
+        final ISocialProvider.SocialActionType uploadImageType = ISocialProvider.SocialActionType.UPLOAD_IMAGE;
+        BusProvider.getInstance().post(new SocialActionStartedEvent(provider, uploadImageType, payload));
+        socialProvider.uploadImage(message, filePath, new SocialCallbacks.SocialActionListener() {
+                    @Override
+                    public void success() {
+                        BusProvider.getInstance().post(new SocialActionFinishedEvent(provider, uploadImageType, payload));
+
+                        if (reward != null) {
+                            reward.give();
+                        }
+                    }
+
+                    @Override
+                    public void fail(String message) {
+                        BusProvider.getInstance().post(new SocialActionFailedEvent(provider, uploadImageType, message, payload));
+                    }
+                }
+        );
+    }
+
+    private void internalUploadImage(final IProvider.Provider provider, final String message, String fileName, Bitmap bitmap, int jpegQuality, final String payload, final Reward reward, final ISocialProvider socialProvider) {
+        final ISocialProvider.SocialActionType uploadImageType = ISocialProvider.SocialActionType.UPLOAD_IMAGE;
+        BusProvider.getInstance().post(new SocialActionStartedEvent(provider, uploadImageType, payload));
+
+        //Save a temp image to external storage in background and try to upload it when finished
+        new AsyncTask<TempImage, Object, File>() {
+
+            @Override
+            protected File doInBackground(TempImage... params) {
+                try {
+                    return params[0].writeToStorage();
+                } catch (IOException e) {
+                    return null;
+                }
+            }
+
+            @Override
+            protected void onPostExecute(final File result){
+                if (result == null){
+                    BusProvider.getInstance().post(new SocialActionFailedEvent(provider, uploadImageType, "No image file to upload.", payload));
+                    return;
+                }
+
+                socialProvider.uploadImage(message, result.getAbsolutePath(), new SocialCallbacks.SocialActionListener() {
+                            @Override
+                            public void success() {
+                                BusProvider.getInstance().post(new SocialActionFinishedEvent(provider, uploadImageType, payload));
+
+                                if (reward != null) {
+                                    reward.give();
+                                }
+
+                                result.delete();
+                            }
+
+                            @Override
+                            public void fail(String message) {
+                                BusProvider.getInstance().post(new SocialActionFailedEvent(provider, uploadImageType, message, payload));
+
+                                result.delete();
+                            }
+                        }
+                );
+            }
+        }.execute(new TempImage(fileName, bitmap, jpegQuality));
+    }
+
+    /*
+     * Temp image class - required to correct usage of `uploadImage` methods
+     */
+    private class TempImage {
+
+        public TempImage(String aFileName, Bitmap aBitmap, int aJpegQuality){
+            this.mFileName = aFileName;
+            this.mImageBitmap = aBitmap;
+            this.mJpegQuality = aJpegQuality;
+        }
+
+        protected File writeToStorage() throws IOException {
+            SoomlaUtils.LogDebug(TAG, "Saving temp image file.");
+
+            File tempDir = new File(getTempImageDir());
+            tempDir.mkdirs();
+            BufferedOutputStream bos = null;
+
+            try{
+                File file = new File(tempDir.toString() + this.mFileName);
+                FileOutputStream fileOutputStream = new FileOutputStream(file);
+                bos = new BufferedOutputStream(fileOutputStream);
+
+                String extension = this.mFileName.substring((this.mFileName.lastIndexOf(".") + 1), this.mFileName.length());
+                Bitmap.CompressFormat format = ("png".equals(extension) ? Bitmap.CompressFormat.PNG : Bitmap.CompressFormat.JPEG);
+
+                this.mImageBitmap.compress(format, this.mJpegQuality, bos);
+
+                bos.flush();
+                return file;
+
+            } catch (Exception e){
+                SoomlaUtils.LogError(TAG, "(save) Failed saving temp image file: " + this.mFileName + " with error: " + e.getMessage());
+
+            } finally {
+                if (bos != null){
+                    bos.close();
+                }
+            }
+
+            return null;
+        }
+
+        private String getTempImageDir(){
+            if (!Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())){
+                SoomlaUtils.LogDebug(TAG, "(getTempImageDir) External storage not ready.");
+                return null;
+            }
+
+            ContextWrapper soomContextWrapper = new ContextWrapper(SoomlaApp.getAppContext());
+
+            return Environment.getExternalStorageDirectory() + soomContextWrapper.getFilesDir().getPath() + "/temp/";
+        }
+
+        final String TAG = "TempImageFile";
+        Bitmap mImageBitmap;
+        String mFileName;
+        int mJpegQuality;
+    }
+
     /**
      * Private Members *
      */
 
-    private AuthController mAuthController;
-    private SocialController mSocialController;
+    private ProviderManager mProviderManager;
 
 
     /**
