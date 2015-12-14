@@ -38,14 +38,20 @@ import com.soomla.profile.auth.IAuthProvider;
 import com.soomla.profile.data.UserProfileStorage;
 import com.soomla.profile.domain.IProvider;
 import com.soomla.profile.domain.UserProfile;
+import com.soomla.profile.domain.gameservices.Leaderboard;
+import com.soomla.profile.domain.gameservices.Score;
 import com.soomla.profile.events.UserRatingEvent;
 import com.soomla.profile.events.ProfileInitializedEvent;
 import com.soomla.profile.events.auth.*;
+import com.soomla.profile.events.gameservices.*;
 import com.soomla.profile.events.social.*;
 import com.soomla.profile.exceptions.ProviderNotFoundException;
+import com.soomla.profile.gameservices.GameServicesCallbacks;
+import com.soomla.profile.gameservices.IGameServicesProvider;
 import com.soomla.profile.social.ISocialProvider;
 import com.soomla.profile.social.SocialCallbacks;
 import com.soomla.rewards.Reward;
+import com.squareup.otto.Bus;
 
 import java.io.BufferedOutputStream;
 import java.io.File;
@@ -133,7 +139,7 @@ public class SoomlaProfile {
         return true;
     }
 
-    public void settleAutoLogin(Activity activity) {
+    private void settleAutoLogin(Activity activity) {
         List<IAuthProvider> authProviders = mProviderManager.getAllAuthProviders();
         for (IAuthProvider authProvider : authProviders) {
             if (authProvider.isAutoLogin()) {
@@ -1150,6 +1156,170 @@ public class SoomlaProfile {
         Intent chooser = Intent.createChooser(sharingIntent, "Share");
         chooser.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         SoomlaApp.getAppContext().startActivity(chooser);
+    }
+
+    /**
+     * Fetches the game's leaderboards list
+     *
+     * @param provider The provider to use
+     * @param reward   The reward to grant
+     * @throws ProviderNotFoundException if the supplied provider is not
+     *                                   supported by the framework
+     */
+    public void getLeaderboards(final IProvider.Provider provider, final Reward reward) throws ProviderNotFoundException {
+        getLeaderboards(provider, "", reward);
+    }
+
+    /**
+     * Fetches the game's leaderboards list
+     *
+     * @param provider The provider to use
+     * @param payload  a String to receive when the function returns.
+     * @param reward   The reward to grant
+     * @throws ProviderNotFoundException if the supplied provider is not
+     *                                   supported by the framework
+     */
+    public void getLeaderboards(final IProvider.Provider provider, final String payload, final Reward reward) throws ProviderNotFoundException {
+        final IGameServicesProvider gsProvider = mProviderManager.getGameServicesProvider(provider);
+
+        BusProvider.getInstance().post(new GetLeaderboardsStartedEvent(provider, payload));
+        gsProvider.getLeaderboards(new GameServicesCallbacks.SuccessWithListListener<Leaderboard>() {
+            @Override
+            public void success(List<Leaderboard> result, boolean hasMore) {
+                if (reward != null) {
+                    reward.give();
+                }
+                BusProvider.getInstance().post(new GetLeaderboardsFinishedEvent(provider, result, payload));
+            }
+
+            @Override
+            public void fail(String message) {
+                BusProvider.getInstance().post(new GetLeaderboardsFailedEvent(provider, message, payload));
+            }
+        });
+    }
+
+    /**
+     * Fetches the game's scores list from specified leaderboard
+     *
+     * @param provider The provider to use
+     * @param leaderboard Leaderboard containing desired scores list
+     * @param reward   The reward to grant
+     * @throws ProviderNotFoundException if the supplied provider is not
+     *                                   supported by the framework
+     */
+    public void getScores(final IProvider.Provider provider, final Leaderboard leaderboard, final Reward reward) throws ProviderNotFoundException {
+        getScores(provider, leaderboard, false, "", reward);
+    }
+
+    /**
+     * Fetches the game's scores list from specified leaderboard
+     *
+     * @param provider The provider to use
+     * @param leaderboard Leaderboard containing desired scores list
+     * @param fromStart Should we reset pagination or request the next page
+     * @param reward   The reward to grant
+     * @throws ProviderNotFoundException if the supplied provider is not
+     *                                   supported by the framework
+     */
+    public void getScores(final IProvider.Provider provider, final Leaderboard leaderboard, final boolean fromStart, final Reward reward) throws ProviderNotFoundException {
+        getScores(provider, leaderboard, fromStart, "", reward);
+    }
+
+    /**
+     * Fetches the game's scores list from specified leaderboard
+     *
+     * @param provider The provider to use
+     * @param leaderboard Leaderboard containing desired scores list
+     * @param fromStart Should we reset pagination or request the next page
+     * @param payload  a String to receive when the function returns.
+     * @param reward   The reward to grant
+     * @throws ProviderNotFoundException if the supplied provider is not
+     *                                   supported by the framework
+     */
+    public void getScores(final IProvider.Provider provider, final Leaderboard leaderboard, final boolean fromStart, final String payload, final Reward reward) throws ProviderNotFoundException {
+        final IGameServicesProvider gsProvider = mProviderManager.getGameServicesProvider(provider);
+
+        BusProvider.getInstance().post(new GetScoresStartedEvent(provider, leaderboard, fromStart, payload));
+        gsProvider.getScores(leaderboard.getId(), fromStart, new GameServicesCallbacks.SuccessWithListListener<Score>() {
+            @Override
+            public void success(List<Score> result, boolean hasMore) {
+                if (reward != null) {
+                    reward.give();
+                }
+                BusProvider.getInstance().post(new GetScoresFinishedEvent(provider, leaderboard, result, hasMore, payload));
+            }
+
+            @Override
+            public void fail(String message) {
+                BusProvider.getInstance().post(new GetScoresFailedEvent(provider, leaderboard, fromStart, message, payload));
+            }
+        });
+    }
+
+    /**
+     * Submits scores to specified leaderboard
+     *
+     * @param provider The provider to use
+     * @param leaderboard Leaderboard containing desired scores list
+     * @param value Value to report
+     * @param payload  a String to receive when the function returns.
+     * @param reward   The reward to grant
+     * @throws ProviderNotFoundException if the supplied provider is not
+     *                                   supported by the framework
+     */
+    public void submitScore(final IProvider.Provider provider, final Leaderboard leaderboard, final long value, final String payload, final Reward reward) throws ProviderNotFoundException {
+        final IGameServicesProvider gsProvider = mProviderManager.getGameServicesProvider(provider);
+
+        BusProvider.getInstance().post(new SubmitScoreStartedEvent(provider, leaderboard, payload));
+        gsProvider.submitScore(leaderboard.getId(), value, new GameServicesCallbacks.SuccessWithScoreListener() {
+            @Override
+            public void success(Score score) {
+                BusProvider.getInstance().post(new SubmitScoreFinishedEvent(provider, leaderboard, score, payload));
+
+                if (reward != null) {
+                    reward.give();
+                }
+            }
+
+            @Override
+            public void fail(String message) {
+                BusProvider.getInstance().post(new SubmitScoreFailedEvent(provider, leaderboard, message, payload));
+            }
+        });
+    }
+
+    /**
+     * Opens native dialog displaying leaderboards list
+     *
+     * @param provider The provider to use
+     * @param activity The parent activity
+     * @param payload  a String to receive when the function returns.
+     * @throws ProviderNotFoundException if the supplied provider is not
+     *                                   supported by the framework
+     */
+    public void showLeaderboards(final IProvider.Provider provider, final Activity activity, final String payload) throws ProviderNotFoundException {
+        this.showLeaderboards(provider, activity, payload, null);
+    }
+
+    /**
+     * Opens native dialog displaying leaderboards list
+     *
+     * @param provider The provider to use
+     * @param activity The parent activity
+     * @param payload  a String to receive when the function returns.
+     * @param reward   The reward to grant
+     * @throws ProviderNotFoundException if the supplied provider is not
+     *                                   supported by the framework
+     */
+    public void showLeaderboards(final IProvider.Provider provider, final Activity activity, final String payload, final Reward reward) throws ProviderNotFoundException {
+        final IGameServicesProvider gsProvider = mProviderManager.getGameServicesProvider(provider);
+
+        gsProvider.showLeaderboards(activity);
+        if (reward != null) {
+            reward.give();
+        }
+        BusProvider.getInstance().post(new ShowLeaderboardsEvent(provider, payload));
     }
 
     /*

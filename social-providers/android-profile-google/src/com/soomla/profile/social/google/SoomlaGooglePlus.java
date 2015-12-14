@@ -16,10 +16,8 @@
 
 package com.soomla.profile.social.google;
 
-import android.accounts.AccountManager;
 import android.annotation.TargetApi;
 import android.app.Activity;
-import android.content.Context;
 import android.content.Intent;
 import android.content.IntentSender;
 import android.net.Uri;
@@ -27,27 +25,35 @@ import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
-import android.test.mock.MockContext;
 import android.text.TextUtils;
-
 import android.util.Log;
 import com.google.android.gms.auth.GoogleAuthException;
 import com.google.android.gms.auth.GoogleAuthUtil;
-import com.google.android.gms.auth.UserRecoverableAuthException;
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.api.CommonStatusCodes;
 import com.google.android.gms.common.api.GoogleApiClient;
 import com.google.android.gms.common.api.ResultCallback;
+import com.google.android.gms.games.Game;
+import com.google.android.gms.games.Games;
+import com.google.android.gms.games.PageDirection;
+import com.google.android.gms.games.leaderboard.LeaderboardScore;
+import com.google.android.gms.games.leaderboard.LeaderboardScoreBuffer;
+import com.google.android.gms.games.leaderboard.LeaderboardVariant;
+import com.google.android.gms.games.leaderboard.Leaderboards;
 import com.google.android.gms.plus.People;
 import com.google.android.gms.plus.Plus;
 import com.google.android.gms.plus.PlusShare;
 import com.google.android.gms.plus.model.people.Person;
 import com.google.android.gms.plus.model.people.PersonBuffer;
-import com.soomla.Soomla;
 import com.soomla.SoomlaUtils;
+import com.soomla.profile.SoomlaProfile;
 import com.soomla.profile.auth.AuthCallbacks;
 import com.soomla.profile.auth.IAuthProvider;
 import com.soomla.profile.domain.UserProfile;
+import com.soomla.profile.domain.gameservices.Leaderboard;
+import com.soomla.profile.domain.gameservices.Score;
+import com.soomla.profile.gameservices.GameServicesCallbacks;
+import com.soomla.profile.gameservices.IGameServicesProvider;
 import com.soomla.profile.social.ISocialProvider;
 import com.soomla.profile.social.SocialCallbacks;
 
@@ -60,15 +66,17 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Soomla wrapper for GooglePlusAPIClient.
+ * Soomla wrapper for googleApiClient.
  * This class works by creating a transparent activity (SoomlaGooglePlusActivity) and working through it.
  * This is required to correctly integrate with GooglePlus activity lifecycle events
  */
-public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
+public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider, IGameServicesProvider {
 
     private static final String TAG = "SOOMLA SoomlaGoogle";
 
-    private static GoogleApiClient GooglePlusAPIClient;
+    private static final int ITEMS_PER_PAGE = 25;
+
+    private static GoogleApiClient googleApiClient;
     private static WeakReference<Activity> WeakRefParentActivity;
     private static Provider RefProvider;
     private static AuthCallbacks.LoginListener RefLoginListener;
@@ -81,12 +89,14 @@ public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
     public static final int ACTION_PUBLISH_STATUS_DIALOG = 4;
 
     private boolean autoLogin;
+    private boolean enableGameServices;
 
     private String lastContactCursor = null;
+    private Map<String, LeaderboardScoreBuffer> scoresCursors = null;
 
     /**
      * The main Soomla Google Plus activity
-     * Handles GooglePlusAPIClient build and connection processes, as well as
+     * Handles googleApiClient build and connection processes, as well as
      * it's API calls such as updating status, uploading image etc...
      */
     public static class SoomlaGooglePlusActivity extends Activity implements
@@ -116,7 +126,7 @@ public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
 
             switch (userAction) {
                 case ACTION_LOGIN: {
-                    login();
+                    login(intent.getBooleanExtra("enableGameServices", false));
                     break;
                 }
                 case ACTION_PUBLISH_STATUS: {
@@ -148,17 +158,22 @@ public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
             }
         }
 
-        private void login() {
-            GooglePlusAPIClient = new GoogleApiClient.Builder(this)
+        private void login(boolean enableGameServices) {
+            GoogleApiClient.Builder clientBuilder = new GoogleApiClient.Builder(this)
                     .addConnectionCallbacks(this)
                     .addOnConnectionFailedListener(this)
                     .addApi(Plus.API, Plus.PlusOptions.builder().build())
-                    .addScope(Plus.SCOPE_PLUS_LOGIN)
-                    .build();
+                    .addScope(Plus.SCOPE_PLUS_LOGIN);
+            if (enableGameServices) {
+                clientBuilder
+                        .addApi(Games.API, Games.GamesOptions.builder().build())
+                        .addScope(Games.SCOPE_GAMES);
+            }
+            googleApiClient = clientBuilder.build();
 
-            if (!GooglePlusAPIClient.isConnecting()){
+            if (!googleApiClient.isConnecting()){
                 signInRequested = true;
-                GooglePlusAPIClient.connect();
+                googleApiClient.connect();
             }
         }
 
@@ -226,7 +241,7 @@ public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
         @Override
         public void onConnectionSuspended(int i) {
             SoomlaUtils.LogDebug(TAG, "onConnectionSuspended");
-            GooglePlusAPIClient.connect();
+            googleApiClient.connect();
         }
 
         @Override
@@ -256,7 +271,7 @@ public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
 
             }catch (IntentSender.SendIntentException e){
                 connectionInProgress = false;
-                GooglePlusAPIClient.connect();
+                googleApiClient.connect();
             }
         }
 
@@ -268,8 +283,8 @@ public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
 
                     connectionInProgress = false;
 
-                    if (!GooglePlusAPIClient.isConnecting())
-                        GooglePlusAPIClient.connect();
+                    if (!googleApiClient.isConnecting())
+                        googleApiClient.connect();
                     break;
                 }
 
@@ -293,14 +308,18 @@ public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
         RefLoginListener = loginListener;
         Intent intent = new Intent(parentActivity, SoomlaGooglePlusActivity.class);
         intent.putExtra("action", ACTION_LOGIN);
+        intent.putExtra("enableGameServices", enableGameServices);
         parentActivity.startActivity(intent);
     }
 
     @Override
     public void logout(AuthCallbacks.LogoutListener logoutListener) {
         try {
-            Plus.AccountApi.clearDefaultAccount(GooglePlusAPIClient);
-            GooglePlusAPIClient.disconnect();
+            Plus.AccountApi.clearDefaultAccount(googleApiClient);
+            if (enableGameServices) {
+                Games.signOut(googleApiClient);
+            }
+            googleApiClient.disconnect();
             logoutListener.success();
         } catch (Exception e) {
             logoutListener.fail("Failed to logout with exception: " + e.getMessage());
@@ -319,7 +338,7 @@ public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
 
     @Override
     public boolean isLoggedIn() {
-        return (GooglePlusAPIClient != null && GooglePlusAPIClient.isConnected());
+        return (googleApiClient != null && googleApiClient.isConnected());
     }
 
     @Override
@@ -403,7 +422,7 @@ public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
                         String SCOPES = "https://www.googleapis.com/auth/plus.login";
                         token = GoogleAuthUtil.getToken(
                                 WeakRefParentActivity.get(),
-                                Plus.AccountApi.getAccountName(GooglePlusAPIClient),
+                                Plus.AccountApi.getAccountName(googleApiClient),
                                 "oauth2:" + SCOPES);
                     } catch (GoogleAuthException|IOException exc) {
                         SoomlaUtils.LogError(TAG, exc.getMessage());
@@ -413,10 +432,10 @@ public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
 
                 @Override
                 protected void onPostExecute(String token) {
-                    Person profile = Plus.PeopleApi.getCurrentPerson(GooglePlusAPIClient);
+                    Person profile = Plus.PeopleApi.getCurrentPerson(googleApiClient);
 					if(profile != null) {
-						String email = Plus.AccountApi.getAccountName(GooglePlusAPIClient);
-						HashMap<String, Object> extraDict = new HashMap<>();
+						String email = Plus.AccountApi.getAccountName(googleApiClient);
+						Map<String, Object> extraDict = new HashMap<>();
 						extraDict.put("access_token", token);
 						final UserProfile userProfile = new UserProfile(getProvider(), profile.getId(),
 								profile.getDisplayName(), email,
@@ -441,10 +460,10 @@ public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
     @Override
     public void getContacts(boolean fromStart, final SocialCallbacks.ContactsListener contactsListener) {
         RefProvider = getProvider();
-        if (GooglePlusAPIClient != null && GooglePlusAPIClient.isConnected()){
+        if (googleApiClient != null && googleApiClient.isConnected()){
             String lastContactCursor = this.lastContactCursor;
             this.lastContactCursor = null;
-            Plus.PeopleApi.loadVisible(GooglePlusAPIClient, fromStart ? null : lastContactCursor)
+            Plus.PeopleApi.loadVisible(googleApiClient, fromStart ? null : lastContactCursor)
                     .setResultCallback(new ResultCallback<People.LoadPeopleResult>() {
                         @Override
                         public void onResult(People.LoadPeopleResult peopleData) {
@@ -478,10 +497,15 @@ public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
     @Override
     public void configure(Map<String, String> providerParams) {
         autoLogin = false;
+        scoresCursors = new HashMap<>();
         if (providerParams != null) {
             // extract autoLogin
             String autoLoginStr = providerParams.get("autoLogin");
             autoLogin = autoLoginStr != null && Boolean.parseBoolean(autoLoginStr);
+
+            //extract enable game services parameter
+            String enableGameServicesStr = providerParams.get("enableGameServices");
+            enableGameServices = enableGameServicesStr != null && Boolean.parseBoolean(enableGameServicesStr);
         }
     }
 
@@ -489,6 +513,136 @@ public class SoomlaGooglePlus implements IAuthProvider, ISocialProvider {
     public void getFeed(Boolean fromStart, SocialCallbacks.FeedListener feedsListener) {
         //TODO
         feedsListener.fail("getFeed is not implemented");
+    }
+
+    @Override
+    public void getLeaderboards(final GameServicesCallbacks.SuccessWithListListener<Leaderboard> leaderboardsListener) {
+        if (enableGameServices) {
+            Games.Leaderboards.loadLeaderboardMetadata(googleApiClient, true).setResultCallback(new ResultCallback<Leaderboards.LeaderboardMetadataResult>() {
+                @Override
+                public void onResult(Leaderboards.LeaderboardMetadataResult leaderboardMetadataResult) {
+                    if (leaderboardMetadataResult.getStatus().isSuccess()) {
+                        List<Leaderboard> result = new ArrayList<>();
+                        for (com.google.android.gms.games.leaderboard.Leaderboard lb : leaderboardMetadataResult.getLeaderboards()) {
+                            result.add(new Leaderboard(lb.getLeaderboardId(), Provider.GOOGLE, lb.getDisplayName(), lb.getIconImageUrl()));
+                        }
+                        leaderboardsListener.success(result, false);
+                    } else {
+                        leaderboardsListener.fail(leaderboardMetadataResult.getStatus().getStatusMessage());
+                    }
+                }
+            });
+        } else {
+            leaderboardsListener.fail("To use GPGS features, please set `enableGameServices = true` in Google provider initialization parameters.");
+        }
+    }
+
+    @Override
+    public void getScores(final String leaderboardId, boolean fromStart, final GameServicesCallbacks.SuccessWithListListener<Score> scoreListener) {
+        if (enableGameServices) {
+            LeaderboardScoreBuffer leaderboardScores = scoresCursors.get(leaderboardId);
+            if (fromStart || leaderboardScores == null) {
+                Games.Leaderboards.loadTopScores(googleApiClient, leaderboardId, LeaderboardVariant.TIME_SPAN_ALL_TIME, LeaderboardVariant.COLLECTION_PUBLIC, ITEMS_PER_PAGE)
+                        .setResultCallback(new ResultCallback<Leaderboards.LoadScoresResult>() {
+                            @Override
+                            public void onResult(Leaderboards.LoadScoresResult loadScoresResult) {
+                                if (loadScoresResult.getStatus().isSuccess()) {
+                                    scoresCursors.put(leaderboardId, loadScoresResult.getScores());
+                                    List<Score> result = new ArrayList<Score>();
+                                    for (LeaderboardScore ls : loadScoresResult.getScores()) {
+                                        UserProfile scoreOwner = new UserProfile(
+                                                getProvider(),
+                                                ls.getScoreHolder().getPlayerId(),
+                                                ls.getScoreHolder().getDisplayName(),
+                                                "",
+                                                "",
+                                                ""
+                                        );
+                                        scoreOwner.setAvatarLink(ls.getScoreHolder().getHiResImageUrl());
+                                        Score ourScore = new Score(
+                                                new Leaderboard(leaderboardId, getProvider(), "", ""), // here is no iconURL and title at this moment
+                                                ls.getRank(),
+                                                scoreOwner,
+                                                ls.getRawScore()
+                                        );
+                                        result.add(ourScore);
+                                    }
+                                    scoreListener.success(result, false);
+                                } else {
+                                    scoreListener.fail(loadScoresResult.getStatus().getStatusMessage());
+                                }
+                            }
+                        });
+            } else {
+                Games.Leaderboards.loadMoreScores(googleApiClient, leaderboardScores, ITEMS_PER_PAGE, PageDirection.NEXT).setResultCallback(new ResultCallback<Leaderboards.LoadScoresResult>() {
+                    @Override
+                    public void onResult(Leaderboards.LoadScoresResult loadScoresResult) {
+                        if (loadScoresResult.getStatus().isSuccess()) {
+                            scoresCursors.put(leaderboardId, loadScoresResult.getScores());
+                            List<Score> result = new ArrayList<Score>();
+                            for (LeaderboardScore ls : loadScoresResult.getScores()) {
+                                UserProfile scoreOwner = new UserProfile(
+                                        getProvider(),
+                                        ls.getScoreHolder().getPlayerId(),
+                                        ls.getScoreHolder().getDisplayName(),
+                                        "",
+                                        "",
+                                        ""
+                                );
+                                scoreOwner.setAvatarLink(ls.getScoreHolder().getHiResImageUrl());
+                                Score ourScore = new Score(
+                                        new Leaderboard(leaderboardId, getProvider(), "", ""), // here is no iconURL and title at this moment
+                                        ls.getRank(),
+                                        scoreOwner,
+                                        ls.getRawScore()
+                                );
+                                result.add(ourScore);
+                            }
+                            scoreListener.success(result, false);
+                        } else {
+                            scoreListener.fail(loadScoresResult.getStatus().getStatusMessage());
+                        }
+                    }
+                });
+            }
+        } else {
+            scoreListener.fail("To use GPGS features, please set `enableGameServices = true` in Google provider initialization parameters.");
+        }
+    }
+
+    @Override
+    public void submitScore(String leaderboardId, long value, final GameServicesCallbacks.SuccessWithScoreListener submitScoreListener) {
+        if (enableGameServices) {
+            Games.Leaderboards.submitScoreImmediate(googleApiClient, leaderboardId, value).setResultCallback(new ResultCallback<Leaderboards.SubmitScoreResult>() {
+                @Override
+                public void onResult(Leaderboards.SubmitScoreResult submitScoreResult) {
+                    if (submitScoreResult.getStatus().isSuccess()) {
+                        submitScoreListener.success(
+                                new Score(
+                                        new Leaderboard(submitScoreResult.getScoreData().getLeaderboardId(), getProvider(), "", ""), // here is no iconURL and title at this moment
+                                        0, // rank is undefined here
+                                        SoomlaProfile.getInstance().getStoredUserProfile(getProvider()),
+                                        submitScoreResult.getScoreData().getScoreResult(LeaderboardVariant.TIME_SPAN_ALL_TIME).rawScore
+                                )
+                        );
+                    } else {
+                        submitScoreListener.fail(submitScoreResult.getStatus().getStatusMessage());
+                    }
+                }
+            });
+        } else {
+            submitScoreListener.fail("To use GPGS features, please set `enableGameServices = true` in Google provider initialization parameters.");
+        }
+    }
+
+    @Override
+    public void showLeaderboards(final Activity activity) {
+        if (enableGameServices) {
+            SoomlaUtils.LogDebug(TAG, "showLeaderboards");
+            activity.startActivityForResult(Games.Leaderboards.getAllLeaderboardsIntent(googleApiClient), 2);
+        } else {
+            Log.e(TAG, "To use GPGS features, please set `enableGameServices = true` in Google provider initialization parameters.");
+        }
     }
 
     @Override

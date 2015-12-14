@@ -20,6 +20,7 @@ import com.soomla.SoomlaUtils;
 import com.soomla.profile.auth.IAuthProvider;
 import com.soomla.profile.domain.IProvider;
 import com.soomla.profile.exceptions.ProviderNotFoundException;
+import com.soomla.profile.gameservices.IGameServicesProvider;
 import com.soomla.profile.social.ISocialProvider;
 
 import java.security.InvalidParameterException;
@@ -108,6 +109,20 @@ public class ProviderManager {
         for (IProvider provider : mProviders.values()) {
             if (provider instanceof ISocialProvider) {
                 result.add((ISocialProvider)provider);
+            }
+        }
+        return result;
+    }
+
+    public IGameServicesProvider getGameServicesProvider(IProvider.Provider provider) throws ProviderNotFoundException {
+        return (IGameServicesProvider)getProvider(provider, ISocialProvider.class);
+    }
+
+    public List<IGameServicesProvider> getAllGameServicesProviders() {
+        List<IGameServicesProvider> result = new ArrayList<>();
+        for (IProvider provider : mProviders.values()) {
+            if (provider instanceof IGameServicesProvider) {
+                result.add((IGameServicesProvider)provider);
             }
         }
         return result;
