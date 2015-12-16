@@ -3,6 +3,8 @@ set -e
 DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 cd $DIR
 
+./download_deps
+
 ant -buildfile android-profile-google.xml -Dsoomla.filename="AndroidProfileGoogle" all
 
 cd - > /dev/null

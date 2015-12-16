@@ -24,6 +24,7 @@ public class PJSONConsts {
 
     /** User Profile **/
 
+    public static final String UP_IDENTIFIER       = "identifier";
     public static final String UP_PROVIDER         = "provider";
     public static final String UP_PROFILEID        = "profileId";
     public static final String UP_USERNAME         = "username";
@@ -36,4 +37,11 @@ public class PJSONConsts {
     public static final String UP_LANGUAGE         = "language";
     public static final String UP_BIRTHDAY         = "birthday";
     public static final String UP_EXTRA            = "extra";
+
+    public static final String UP_USER_PROFILE     = "userProfile";
+    public static final String UP_ICON_URL         = "iconUrl";
+    public static final String UP_NAME             = "name";
+    public static final String UP_LEADERBOARD      = "leaderboard";
+    public static final String UP_SCORE_VALUE      = "scoreValue";
+    public static final String UP_SCORE_RANK       = "scoreRank";
 }
