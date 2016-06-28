@@ -1,51 +1,55 @@
-/*
- * Copyright (C) 2012-2014 Soomla Inc.
- *
- *   Licensed under the Apache License, Version 2.0 (the "License");
- *   you may not use this file except in compliance with the License.
- *   You may obtain a copy of the License at
- *
- *        http://www.apache.org/licenses/LICENSE-2.0
- *
- *   Unless required by applicable law or agreed to in writing, software
- *   distributed under the License is distributed on an "AS IS" BASIS,
- *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *   See the License for the specific language governing permissions and
- *   limitations under the License.
- */
-
 package com.soomla.profile.social.twitter;
 
 import android.app.Activity;
 import android.content.Intent;
-import android.os.Bundle;
 import android.net.Uri;
-import android.os.Debug;
+import android.os.Bundle;
 import android.text.TextUtils;
 import android.util.Log;
-import android.webkit.WebView;
-import android.webkit.WebViewClient;
+import android.webkit.CookieManager;
 
 import com.soomla.SoomlaUtils;
-import com.soomla.data.KeyValueStorage;
 import com.soomla.profile.auth.AuthCallbacks;
 import com.soomla.profile.auth.IAuthProvider;
 import com.soomla.profile.domain.UserProfile;
 import com.soomla.profile.social.ISocialProvider;
 import com.soomla.profile.social.SocialCallbacks;
+import com.twitter.sdk.android.Twitter;
+import com.twitter.sdk.android.core.Callback;
+import com.twitter.sdk.android.core.Result;
+import com.twitter.sdk.android.core.TwitterApiClient;
+import com.twitter.sdk.android.core.TwitterAuthConfig;
+import com.twitter.sdk.android.core.TwitterAuthToken;
+import com.twitter.sdk.android.core.TwitterCore;
+import com.twitter.sdk.android.core.TwitterException;
+import com.twitter.sdk.android.core.TwitterSession;
+import com.twitter.sdk.android.core.identity.TwitterAuthClient;
+import com.twitter.sdk.android.core.models.Media;
+import com.twitter.sdk.android.core.models.Tweet;
+import com.twitter.sdk.android.core.models.User;
+import com.twitter.sdk.android.core.services.StatusesService;
 
-import twitter4j.*;
-import twitter4j.auth.*;
-import twitter4j.conf.Configuration;
-import twitter4j.conf.ConfigurationBuilder;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.InputStreamReader;
 import java.lang.ref.WeakReference;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+import io.fabric.sdk.android.Fabric;
+import retrofit.client.Response;
+import retrofit.http.GET;
+import retrofit.http.Query;
+import retrofit.mime.TypedFile;
+import retrofit.mime.TypedInput;
 
 /**
  * Soomla wrapper for Twitter4J (unofficial SDK for Twitter API).
- *
+ * <p/>
  * This class uses the <code>SoomlaTwitterWebView</code> to authenticate.
  * All other operations are performed asynchronously via Twitter4J
  */
@@ -53,19 +57,14 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
 
     private static final String TAG = "SOOMLA SoomlaTwitter";
 
-    private static final String DB_KEY_PREFIX = "soomla.profile.twitter.";
-    private static final String TWITTER_OAUTH_TOKEN = "oauth.token";
     private static final String TWITTER_OAUTH_SECRET = "oauth.secret";
     private static final String TWITTER_SCREEN_NAME = "oauth.screenName";
+    private static boolean loginProcess;
 
-    private static final String OAUTH_VERIFIER = "oauth_verifier";
-    private static final int PAGE_SIZE = 20;
+    private static boolean autoLogin;
 
-    private boolean autoLogin;
-
-    // some weak refs that are set before launching the wrapper SoomlaTwitterActivity
-    // (need to be accessed by static context)
-    private static WeakReference<Activity> WeakRefParentActivity;
+    //     some weak refs that are set before launching the wrapper SoomlaTwitterActivity
+//     (need to be accessed by static context)
     private static Provider RefProvider;
     private static AuthCallbacks.LoginListener RefLoginListener;
     private static AuthCallbacks.UserProfileListener RefUserProfileListener;
@@ -73,16 +72,9 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
     private static SocialCallbacks.FeedListener RefFeedListener;
     private static SocialCallbacks.ContactsListener RefContactsListener;
 
-    private String twitterConsumerKey;
-    private String twitterConsumerSecret;
     private boolean isInitialized = false;
 
-    private static AsyncTwitter twitter;
-    private static String twitterScreenName;
-    private static RequestToken mainRequestToken;
     private static boolean actionsListenerAdded = false;
-    private static String oauthCallbackURL;
-
     public static final int ACTION_LOGIN = 0;
 
     public static final int ACTION_PUBLISH_STATUS = 10;
@@ -94,152 +86,12 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
     public static final int ACTION_PUBLISH_STORY_DIALOG = 16;
     public static final int ACTION_GET_USER_PROFILE = 17;
 
-    private int preformingAction = -1;
+    private static TwitterSession session;
+    private static TwitterAuthToken twitterAuthToken;
+    private User user;
+    private static WeakReference<AuthCallbacks.LoginListener> WeakRefLoginListener;
+    private static TwitterAuthClient twitterAuthClient;
 
-    private long lastContactCursor = -1;
-    private int lastFeedCursor = 1;
-
-    /**
-     * Twitter4J uses an old listener model in which you provide a listener
-     * which listens to all possible operations done asynchronously.
-     * Here we define all handling of the completion of such operations.
-     */
-    private TwitterAdapter actionsListener = new TwitterAdapter() {
-
-        /**
-         * Called when the request token has arrived from Twitter
-         *
-         * @param requestToken The request token to use to complete OAuth
-         *                     process
-         */
-        @Override
-        public void gotOAuthRequestToken(RequestToken requestToken) {
-            mainRequestToken = requestToken;
-
-            Intent intent = new Intent(WeakRefParentActivity.get(), SoomlaTwitterActivity.class);
-
-            intent.putExtra("url", mainRequestToken.getAuthenticationURL());
-            WeakRefParentActivity.get().startActivity(intent);
-
-            // Web browser version bad idea (take out of program)
-            // startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(mainRequestToken.getAuthenticationURL())));
-        }
-
-        /**
-         * Called when OAuth authentication has been finalized and an Access
-         * Token and Access Token Secret have been provided
-         *
-         * @param accessToken The access token to use to do REST calls
-         */
-        @Override
-        public void gotOAuthAccessToken(AccessToken accessToken) {
-            SoomlaUtils.LogDebug(TAG, "login/onComplete");
-
-            twitter.setOAuthAccessToken(accessToken);
-
-            // Keep in storage for logging in without web-authentication
-            KeyValueStorage.setValue(getTwitterStorageKey(TWITTER_OAUTH_TOKEN), accessToken.getToken());
-            KeyValueStorage.setValue(getTwitterStorageKey(TWITTER_OAUTH_SECRET), accessToken.getTokenSecret());
-
-            // Keep screen name since Twitter4J does not have it when
-            // logging in using authenticated tokens
-            KeyValueStorage.setValue(getTwitterStorageKey(TWITTER_SCREEN_NAME), accessToken.getScreenName());
-
-            twitterScreenName = accessToken.getScreenName();
-
-            RefLoginListener.success(RefProvider);
-
-            clearListener(ACTION_LOGIN);
-        }
-
-        /**
-         * Called when a user's information has arrived from twitter
-         *
-         * @param user The user's details
-         */
-        @Override
-        public void gotUserDetail(User user) {
-            SoomlaUtils.LogDebug(TAG, "getUserProfile/onComplete");
-            UserProfile userProfile = createUserProfile(user, true);
-
-            RefUserProfileListener.success(userProfile);
-
-            clearListener(ACTION_GET_USER_PROFILE);
-        }
-
-        /**
-         * Called when the user's timeline has arrived
-         *
-         * @param statuses The user's latest statuses
-         */
-        @Override
-        public void gotUserTimeline(ResponseList<Status> statuses) {
-            SoomlaUtils.LogDebug(TAG, "getFeed/onComplete");
-
-
-            List<String> feeds = new ArrayList<String>();
-            for (Status post : statuses) {
-                feeds.add(post.getText());
-            }
-
-            boolean hasMore;
-            if (feeds.size() >= PAGE_SIZE) {
-                lastFeedCursor ++;
-                hasMore = true;
-            } else {
-                lastFeedCursor = 1;
-                hasMore = false;
-            }
-            RefFeedListener.success(feeds, hasMore);
-            clearListener(ACTION_GET_FEED);
-        }
-
-        /**
-         * Called when the user's friends list has arrived
-         *
-         * @param users The user's friends (by Twitter definition)
-         */
-        @Override
-        public void gotFriendsList(PagableResponseList<User> users) {
-            SoomlaUtils.LogDebug(TAG, "getContacts/onComplete " + users.size());
-
-            List<UserProfile> userProfiles = new ArrayList<UserProfile>();
-            for (User profile : users) {
-                userProfiles.add(createUserProfile(profile));
-            }
-            if (users.hasNext()) {
-                lastContactCursor = users.getNextCursor();
-            }
-            RefContactsListener.success(userProfiles, users.hasNext());
-            clearListener(ACTION_GET_CONTACTS);
-        }
-
-        /**
-         * Called when a tweet has finished posting
-         *
-         * @param status The status which was posted
-         */
-        @Override
-        public void updatedStatus(Status status) {
-            SoomlaUtils.LogDebug(TAG, "updateStatus/onComplete");
-            RefSocialActionListener.success();
-            clearListener(ACTION_PUBLISH_STATUS);
-        }
-
-        /**
-         * Called whenever an exception has occurred while running a Twitter4J
-         * asynchronous action
-         *
-         * @param e The exception which was thrown
-         * @param twitterMethod The method which failed
-         */
-        @Override
-        public void onException(TwitterException e, TwitterMethod twitterMethod) {
-            SoomlaUtils.LogDebug(TAG, "General fail " + e.getMessage());
-
-            failListener(preformingAction, e.getMessage());
-        }
-    };
 
     /**
      * Soomla Twitter Activity
@@ -249,8 +101,17 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
     public static class SoomlaTwitterActivity extends Activity {
 
         private static final String TAG = "SOOMLA SoomlaTwitter$SoomlaTwitterActivity";
-        private SoomlaTwitterWebView webView = null;
         private boolean mFinishedVerifying = false;
+        private static boolean inProgress;
+
+        @Override
+        protected void onActivityResult(int requestCode, int responseCode, Intent intent) {
+            super.onActivityResult(requestCode, responseCode, intent);
+            if (twitterAuthClient.getRequestCode() == requestCode) {
+                twitterAuthClient.onActivityResult(requestCode, responseCode, intent);
+            }
+            finish();
+        }
 
         /**
          * {@inheritDoc}
@@ -258,62 +119,37 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
         @Override
         protected void onCreate(Bundle savedInstanceState) {
             super.onCreate(savedInstanceState);
+            SoomlaUtils.LogDebug(TAG, "onCreate");
+            login();
+        }
 
-            // Edge case - start activity without twitter
-            if (twitter == null) {
-                finish();
+        private void login() {
+            if (inProgress) {
                 return;
             }
+            inProgress = true;
+            Twitter.getSessionManager().clearActiveSession();
+            twitterAuthClient.authorize(this, new Callback<TwitterSession>() {
+                @Override
+                public void success(Result<TwitterSession> twitterSessionResult) {
+                    TwitterAuthConfig authConfig =
+                            new TwitterAuthConfig(TWITTER_SCREEN_NAME,
+                                    TWITTER_OAUTH_SECRET);
+                    Fabric.with(SoomlaTwitterActivity.this, new Twitter(authConfig));
+                    session = twitterSessionResult.data;
+                    twitterAuthToken = session.getAuthToken();
+                    WeakRefLoginListener.get().success(RefProvider);
+                    loginProcess = false;
+                }
 
-            SoomlaUtils.LogDebug(TAG, "onCreate");
-
-            if (webView == null) {
-                webView = new SoomlaTwitterWebView(this);
-                webView.setWebViewClient(new WebViewClient(){
-                    @Override
-                    public boolean shouldOverrideUrlLoading (WebView view, String url) {
-                        // See if the URL should be handled by the provider
-                        // only if it's a callback which was passed by the
-                        // provider
-                        if (url.startsWith(oauthCallbackURL)) {
-                            Uri uri = Uri.parse(url);
-                            completeVerify(uri);
-                            return true;
-                        }
-                        return false;
-                    }
-                });
-            }
-
-            // we should append additional param forcing login/pass request, otherwise app will be loaded with previous account
-            // decision based on https://dev.twitter.com/oauth/reference/get/oauth/authorize
-            String url = getIntent().getStringExtra("url")  + "&force_login=true";
-            webView.loadUrlOnUiThread(url);
-            webView.show(this);
+                @Override
+                public void failure(TwitterException e) {
+                    SoomlaUtils.LogError(TAG, e.getMessage());
+                    loginProcess = false;
+                }
+            });
         }
 
-        private void completeVerify(Uri uri) {
-            SoomlaUtils.LogDebug(TAG, "Verification complete");
-            /**
-             * Handle OAuth Callback
-             */
-            if (uri != null && uri.toString().startsWith(oauthCallbackURL)) {
-                String verifier = uri.getQueryParameter(OAUTH_VERIFIER);
-                if (!TextUtils.isEmpty(verifier)) {
-                    twitter.getOAuthAccessTokenAsync(mainRequestToken, verifier);
-                }
-                else {
-                    // Without a verifier an Access Token cannot be received
-                    // happens when a user clicks "cancel"
-                    cancelLogin();
-                }
-            }
-
-            webView.hide();
-            finish();
-
-            mFinishedVerifying = true;
-        }
 
         /**
          * {@inheritDoc}
@@ -334,7 +170,7 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
             if (!mFinishedVerifying) {
                 cancelLogin();
             }
-
+            Twitter.getSessionManager().clearActiveSession();
             SoomlaUtils.LogDebug(TAG, "onDestroy");
         }
 
@@ -354,55 +190,31 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
      */
     @Override
     public void login(final Activity parentActivity, final AuthCallbacks.LoginListener loginListener) {
-        if (!isInitialized) {
-            SoomlaUtils.LogError(TAG, "Consumer key and secret were not defined, please provide them in initialization");
+        if (loginProcess) {
             return;
         }
-
-        SoomlaUtils.LogDebug(TAG, "login");
-        WeakRefParentActivity = new WeakReference<Activity>(parentActivity);
-
-        RefProvider = getProvider();
+        loginProcess = true;
+        twitterAuthClient = new TwitterAuthClient();
         RefLoginListener = loginListener;
-
-        preformingAction = ACTION_LOGIN;
-
-        mainRequestToken = null;
-        twitter.setOAuthAccessToken(null);
-
-        // Try logging in using store credentials
-        String oauthToken = KeyValueStorage.getValue(getTwitterStorageKey(TWITTER_OAUTH_TOKEN));
-        String oauthTokenSecret = KeyValueStorage.getValue(getTwitterStorageKey(TWITTER_OAUTH_SECRET));
-        if (!TextUtils.isEmpty(oauthToken) && !TextUtils.isEmpty(oauthTokenSecret)) {
-            twitter.setOAuthAccessToken(new AccessToken(oauthToken, oauthTokenSecret));
-            twitterScreenName = KeyValueStorage.getValue(getTwitterStorageKey(TWITTER_SCREEN_NAME));
-
-            loginListener.success(RefProvider);
-
-            clearListener(ACTION_LOGIN);
-        }
-        else {
-            // If no stored credentials start login process by requesting
-            // a request token
-            twitter.getOAuthRequestTokenAsync(oauthCallbackURL);
-        }
+        WeakRefLoginListener = new WeakReference<>(loginListener);
+        RefProvider = getProvider();
+        WeakReference<Activity> WeakRefParentActivity = new WeakReference<>(parentActivity);
+        Intent intent = new Intent(WeakRefParentActivity.get(), SoomlaTwitterActivity.class);
+        intent.putExtra("action", ACTION_LOGIN);
+        parentActivity.startActivity(intent);
     }
+
 
     /**
      * {@inheritDoc}
      */
+    @SuppressWarnings("deprecation")
     @Override
     public void logout(final AuthCallbacks.LogoutListener logoutListener) {
-        SoomlaUtils.LogDebug(TAG, "logout");
-
-        KeyValueStorage.deleteKeyValue(getTwitterStorageKey(TWITTER_OAUTH_TOKEN));
-        KeyValueStorage.deleteKeyValue(getTwitterStorageKey(TWITTER_OAUTH_SECRET));
-
-        mainRequestToken = null;
-
-        twitter.setOAuthAccessToken(null);
-        twitter.shutdown();
-
+        CookieManager cookieManager = CookieManager.getInstance();
+        cookieManager.removeSessionCookie();
+        Twitter.getSessionManager().clearActiveSession();
+        Twitter.logOut();
         logoutListener.success();
     }
 
@@ -417,16 +229,13 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
     }
 
     /**
-     *
      * {@inheritDoc}
      */
     @Override
     public boolean isLoggedIn() {
         SoomlaUtils.LogDebug(TAG, "isLoggedIn");
-
         try {
-            return isInitialized &&
-                    (twitter.getOAuthAccessToken() != null);
+            return isInitialized && twitterAuthToken != null;
         } catch (Exception e) {
             return false;
         }
@@ -437,22 +246,37 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
      */
     @Override
     public void getUserProfile(final AuthCallbacks.UserProfileListener userProfileListener) {
+        SoomlaUtils.LogDebug(TAG, "getUserProfile");
         if (!isInitialized) {
             return;
         }
-
-        SoomlaUtils.LogDebug(TAG, "getUserProfile");
-
-        RefProvider = getProvider();
         RefUserProfileListener = userProfileListener;
+        RefProvider = getProvider();
+        Twitter.getApiClient(session).getAccountService()
+                .verifyCredentials(true, false, new Callback<User>() {
+                    @Override
+                    public void failure(TwitterException e) {
+                        SoomlaUtils.LogError(TAG, e.getMessage());
+                        userProfileListener.fail("Unable to get user profile.");
+                    }
 
-        preformingAction = ACTION_GET_USER_PROFILE;
-
-        try {
-            twitter.showUser(twitterScreenName);
-        } catch (Exception e) {
-            failListener(ACTION_GET_USER_PROFILE, e.getMessage());
-        }
+                    @Override
+                    public void success(Result<User> userResult) {
+                        user = userResult.data;
+                        String[] splitName = user.name.split(" ");
+                        String firstName = splitName[0];
+                        String lastName = "";
+                        if (splitName.length > 1) {
+                            lastName = splitName[1];
+                        }
+                        //Twitter does not supply email access: https://dev.twitter.com/faq#26
+                        UserProfile userProfile = new UserProfile(getProvider(),
+                                String.valueOf(user.getId()), user.name, "", firstName, lastName);
+                        userProfile.setAvatarLink(user.profileImageUrl);
+                        userProfile.setLocation(user.location);
+                        userProfileListener.success(userProfile);
+                    }
+                });
     }
 
     /**
@@ -463,16 +287,29 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
         if (!isInitialized) {
             return;
         }
-
         SoomlaUtils.LogDebug(TAG, "updateStatus");
-
-        RefProvider = getProvider();
+        if (session == null) {
+            session = Twitter.getSessionManager().getActiveSession();
+            if (session == null) {
+                SoomlaUtils.LogDebug(TAG, "Session expired");
+                return;
+            }
+        }
+        TwitterApiClient twitterApiClient = new TwitterApiClient(session);
+        StatusesService statusesService = twitterApiClient.getStatusesService();
         RefSocialActionListener = socialActionListener;
-
-        preformingAction = ACTION_PUBLISH_STATUS;
-
         try {
-            twitter.updateStatus(status);
+            statusesService.update(status, null, null, null, null, null, null, null, null, new Callback<Tweet>() {
+                @Override
+                public void success(Result<Tweet> result) {
+                    socialActionListener.success();
+                }
+
+                @Override
+                public void failure(TwitterException exception) {
+                    socialActionListener.fail("fail update status");
+                }
+            });
         } catch (Exception e) {
             failListener(ACTION_PUBLISH_STATUS, e.getMessage());
         }
@@ -486,7 +323,6 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
         if (!isInitialized) {
             return;
         }
-
         SoomlaUtils.LogDebug(TAG, "updateStatusDialog");
         socialActionListener.fail("Dialogs are not available in Twitter");
     }
@@ -500,19 +336,28 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
         if (!isInitialized) {
             return;
         }
-
         SoomlaUtils.LogDebug(TAG, "updateStory");
-
-        RefProvider = getProvider();
-        RefSocialActionListener = socialActionListener;
-
-        preformingAction = ACTION_PUBLISH_STORY;
-
-        try {
-            twitter.updateStatus(message + " " + link);
-        } catch (Exception e) {
-            failListener(ACTION_PUBLISH_STORY, e.getMessage());
+        if (session == null) {
+            session = Twitter.getSessionManager().getActiveSession();
+            if (session == null) {
+                SoomlaUtils.LogDebug(TAG, "Session expired");
+                return;
+            }
         }
+        TwitterApiClient twitterApiClient = new TwitterApiClient(session);
+        StatusesService statusesService = twitterApiClient.getStatusesService();
+        RefSocialActionListener = socialActionListener;
+        statusesService.update(message + " " + link, null, null, null, null, null, null, null, null, new Callback<Tweet>() {
+            @Override
+            public void success(Result<Tweet> result) {
+                socialActionListener.success();
+            }
+
+            @Override
+            public void failure(TwitterException e) {
+                failListener(ACTION_PUBLISH_STORY, e.getMessage());
+            }
+        });
     }
 
     /**
@@ -524,9 +369,7 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
         if (!isInitialized) {
             return;
         }
-
         SoomlaUtils.LogDebug(TAG, "updateStoryDialog");
-
         socialActionListener.fail("Dialogs are not available in Twitter");
     }
 
@@ -538,20 +381,50 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
         if (!isInitialized) {
             return;
         }
-
         SoomlaUtils.LogDebug(TAG, "getContacts");
-
         RefProvider = getProvider();
         RefContactsListener = contactsListener;
 
-        preformingAction = ACTION_GET_USER_PROFILE;
+        TwitterClientApiClient twitterApiClient = new TwitterClientApiClient(session);
+        FollowersService followersService = twitterApiClient.getFollowersService();
+        followersService.followers(user.getId(), null, null, 10, false, true, new Callback<Response>() {
+            @Override
+            public void success(Result<Response> result) {
+                List<UserProfile> users = new ArrayList<>();
+                Response res = result.data;
+                TypedInput body = res.getBody();
+                try {
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(body.in()));
+                    StringBuilder out = new StringBuilder();
+                    String newLine = System.getProperty("line.separator");
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        out.append(line);
+                        out.append(newLine);
+                    }
+                    JSONObject mainObject = new JSONObject(out.toString());
+                    JSONArray usersArray = mainObject.optJSONArray("users");
+                    for (int i = 0; i < usersArray.length(); i++) {
+                        JSONObject user = usersArray.optJSONObject(i);
+                        String userName = String.valueOf(user.opt("name"));
+                        String userId = String.valueOf(user.opt("id_str"));
+                        String[] fullName = userName.split(" ");
+                        String firstName = fullName[0];
+                        String lastName = fullName[1];
+                        UserProfile userProfile = new UserProfile(getProvider(), userId, userName, null, firstName, lastName);
+                        users.add(userProfile);
+                    }
+                    contactsListener.success(users, true); //TODO what is boolean b?
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
 
-        try {
-            twitter.getFriendsList(twitterScreenName, fromStart ? -1 : this.lastContactCursor);
-            this.lastContactCursor = -1;
-        } catch (Exception e) {
-            failListener(ACTION_GET_USER_PROFILE, e.getMessage());
-        }
+            @Override
+            public void failure(TwitterException exception) {
+                SoomlaUtils.LogWarning(TAG, exception.getMessage());
+            }
+        });
     }
 
     /**
@@ -562,24 +435,45 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
         if (!isInitialized) {
             return;
         }
-
-        SoomlaUtils.LogDebug(TAG, "getFeed");
-
         RefProvider = getProvider();
+        SoomlaUtils.LogDebug(TAG, "getFeed");
         RefFeedListener = feedListener;
-
-        preformingAction = ACTION_GET_FEED;
-
-        try {
-            if (fromStart) {
-                this.lastFeedCursor = 1;
+        TwitterClientApiClient twitterApiClient = new TwitterClientApiClient(session);
+        TweetsService tweetsService = twitterApiClient.getTweetsService();
+        //todo change 9999....
+        tweetsService.tweets(user.getId(), null, 1, 20, 999999999999999999L, true, true, true, true, new Callback<Response>() {
+            @Override
+            public void success(Result<Response> result) {
+                List<String> list = new ArrayList<>();
+                TypedInput body = result.data.getBody();
+                try {
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(body.in()));
+                    StringBuilder out = new StringBuilder();
+                    String newLine = System.getProperty("line.separator");
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        out.append(line);
+                        out.append(newLine);
+                    }
+                    JSONArray mainObject = new JSONArray(out.toString());
+                    for (int i = 0; i < mainObject.length(); i++) {
+                        JSONObject user = mainObject.optJSONObject(i);
+                        String text = String.valueOf(user.opt("text"));
+                        list.add(text);
+                    }
+                    feedListener.success(list, true); //todo what is boolean b?
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
 
-            Paging paging = new Paging(this.lastFeedCursor, PAGE_SIZE);
-            twitter.getUserTimeline(paging);
-        } catch (Exception e) {
-            failListener(ACTION_GET_FEED, e.getMessage());
-        }
+            @Override
+            public void failure(TwitterException exception) {
+                SoomlaUtils.LogWarning(TAG, exception.getMessage());
+            }
+        });
+
+
     }
 
     /**
@@ -590,20 +484,57 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
         if (!isInitialized) {
             return;
         }
-
         SoomlaUtils.LogDebug(TAG, "uploadImage");
-
+        final String mess = message;
         RefProvider = getProvider();
         RefSocialActionListener = socialActionListener;
+        if (session == null) {
+            session = Twitter.getSessionManager().getActiveSession();
+            if (session == null) {
+                SoomlaUtils.LogDebug(TAG, "Session expired");
+                return;
+            }
+        }
+        final TwitterClientApiClient twitterApiClient = new TwitterClientApiClient(session);
+        if (filePath == null || filePath.isEmpty()) {
+            twitterApiClient.getStatusesService().update(mess, null, null, null, null, null, null, null, null, new Callback<Tweet>() {
+                @Override
+                public void success(Result<Tweet> result) {
+                    SoomlaUtils.LogDebug(TAG, "file not found");
+                    socialActionListener.success();
+                }
 
-        preformingAction = ACTION_UPLOAD_IMAGE;
+                @Override
+                public void failure(TwitterException exception) {
+                    socialActionListener.fail("fail update status");
+                }
+            });
+        } else {
+            File photo = new File(filePath);
+            TypedFile typedFile = new TypedFile("application/octet-stream", photo);
+            twitterApiClient.getMediaService().upload(typedFile, null, null, new Callback<Media>() {
+                @Override
+                public void success(Result<Media> result) {
+                    StatusesService statusesService = twitterApiClient.getStatusesService();
+                    statusesService.update(mess, null, null, null, null, null, null, null, result.data.mediaIdString, new Callback<Tweet>() {
+                        @Override
+                        public void success(Result<Tweet> result) {
+                            socialActionListener.success();
+                        }
 
-        try {
-            StatusUpdate updateImage = new StatusUpdate(message);
-            updateImage.media(new File(filePath));
-            twitter.updateStatus(updateImage);
-        } catch (Exception e) {
-            failListener(ACTION_UPLOAD_IMAGE, e.getMessage());
+                        @Override
+                        public void failure(TwitterException exception) {
+                            socialActionListener.fail("fail update status");
+                        }
+                    });
+                    socialActionListener.success();
+                }
+
+                @Override
+                public void failure(TwitterException exception) {
+                    socialActionListener.fail("failed load image");
+                }
+            });
         }
     }
 
@@ -632,39 +563,35 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
     @Override
     public void configure(Map<String, String> providerParams) {
         autoLogin = false;
+        String twitterConsumerKey = providerParams.get("consumerKey");
+        String twitterConsumerSecret = providerParams.get("consumerSecret");
 
-        if (providerParams != null) {
-            twitterConsumerKey = providerParams.get("consumerKey");
-            twitterConsumerSecret = providerParams.get("consumerSecret");
-
-            // extract autoLogin
-            String autoLoginStr = providerParams.get("autoLogin");
-            autoLogin = autoLoginStr != null && Boolean.parseBoolean(autoLoginStr);
-        }
+        // extract autoLogin
+        String autoLoginStr = providerParams.get("autoLogin");
+        autoLogin = autoLoginStr != null && Boolean.parseBoolean(autoLoginStr);
 
         SoomlaUtils.LogDebug(TAG, String.format(
-                    "ConsumerKey:%s ConsumerSecret:%s",
-                    twitterConsumerKey, twitterConsumerSecret));
+                "ConsumerKey:%s ConsumerSecret:%s",
+                twitterConsumerKey, twitterConsumerSecret));
 
         if (TextUtils.isEmpty(twitterConsumerKey) || TextUtils.isEmpty(twitterConsumerSecret)) {
             SoomlaUtils.LogError(TAG, "You must provide the Consumer Key and Secret in the SoomlaProfile initialization parameters");
             isInitialized = false;
-        }
-        else {
+        } else {
             isInitialized = true;
         }
 
-        oauthCallbackURL = "oauth://soomla_twitter" + twitterConsumerKey;
-
-        ConfigurationBuilder configurationBuilder = new ConfigurationBuilder();
-        configurationBuilder.setOAuthConsumerKey(twitterConsumerKey);
-        configurationBuilder.setOAuthConsumerSecret(twitterConsumerSecret);
-        Configuration configuration = configurationBuilder.build();
-        twitter = new AsyncTwitterFactory(configuration).getInstance();
+//        oauthCallbackURL = "oauth://soomla_twitter" + twitterConsumerKey;
+//
+//        ConfigurationBuilder configurationBuilder = new ConfigurationBuilder();
+//        configurationBuilder.setOAuthConsumerKey(twitterConsumerKey);
+//        configurationBuilder.setOAuthConsumerSecret(twitterConsumerSecret);
+//        Configuration configuration = configurationBuilder.build();
+//        twitter = new        AsyncTwitterFactory(configuration).getInstance();
 
         if (!actionsListenerAdded) {
             SoomlaUtils.LogWarning(TAG, "added action listener");
-            twitter.addListener(actionsListener);
+//            twitter.addListener(actionsListener);
             actionsListenerAdded = true;
         }
     }
@@ -682,56 +609,9 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
         return autoLogin;
     }
 
-    private String getTwitterStorageKey(String postfix) {
-        return DB_KEY_PREFIX + postfix;
-    }
-
-    private UserProfile createUserProfile(User user, boolean withExtraFields) {
-        String fullName = user.getName();
-        String firstName = "";
-        String lastName = "";
-
-        if (!TextUtils.isEmpty(fullName)) {
-            String[] splitName = fullName.split(" ");
-            if (splitName.length > 0) {
-                firstName = splitName[0];
-                if (splitName.length > 1) {
-                    lastName = splitName[1];
-                }
-            }
-        }
-        Map<String, Object> extraDict = Collections.<String, Object>emptyMap();
-        if (withExtraFields) {
-            extraDict = new HashMap<String, Object>();
-            // TwitterException will throws when Twitter service or network is unavailable, or the user has not authorized
-            try {
-                extraDict.put("access_token", twitter.getOAuthAccessToken().getToken());
-            } catch (TwitterException twitterExc) {
-                SoomlaUtils.LogError(TAG, twitterExc.getErrorMessage());
-            }
-        }
-        //Twitter does not supply email access: https://dev.twitter.com/faq#26
-        UserProfile result = new UserProfile(RefProvider, String.valueOf(user.getId()), user.getScreenName(),
-                "", firstName, lastName, extraDict);
-
-        // No gender information on Twitter:
-        // https://twittercommunity.com/t/how-to-find-male-female-accounts-in-following-list/7367
-        result.setGender("");
-
-        // No birthday on Twitter:
-        // https://twittercommunity.com/t/how-can-i-get-email-of-user-if-i-use-api/7019/16
-        result.setBirthday("");
-
-        result.setLanguage(user.getLang());
-        result.setLocation(user.getLocation());
-        result.setAvatarLink(user.getBiggerProfileImageURL());
-
-        return result;
-    }
-
-    private UserProfile createUserProfile(User user) {
-        return createUserProfile(user, false);
-    }
+//    private String getTwitterStorageKey(String postfix) {
+//        return DB_KEY_PREFIX + postfix;
+//    }
 
     private static void cancelLogin() {
         if (RefLoginListener != null) {
@@ -832,5 +712,46 @@ public class SoomlaTwitter implements IAuthProvider, ISocialProvider {
                 break;
             }
         }
+    }
+
+
+    class TwitterClientApiClient extends TwitterApiClient {
+        public TwitterClientApiClient(TwitterSession session) {
+            super(session);
+        }
+
+        public FollowersService getFollowersService() {
+            return getService(FollowersService.class);
+        }
+
+        public TweetsService getTweetsService() {
+            return getService(TweetsService.class);
+        }
+    }
+
+    interface FollowersService {
+        @GET("/1.1/followers/list.json")
+        void followers(@Query("user_id") long id,
+                       @Query("screen_name") String screen_name,
+                       @Query("cursor") Long cursor,
+                       @Query("count") Integer count,
+                       @Query("skip_status") boolean skip_status,
+                       @Query("include_user_entities") boolean include_user_entities,
+                       Callback<Response> cb);
+    }
+
+
+    interface TweetsService {
+        @GET("/1.1/statuses/user_timeline.json")
+        void tweets(@Query("user_id") long id,
+                    @Query("screen_name") String screen_name,
+                    @Query("since_id") long sinceId,
+                    @Query("count") long count,
+                    @Query("max_id") long maxId,
+                    @Query("trim_user") boolean trimUser,
+                    @Query("exclude_replies") boolean excludeReplies,
+                    @Query("contributor_details") boolean contributor_details,
+                    @Query("include_rts") boolean includeRts,
+                    Callback<Response> cb);
     }
 }
