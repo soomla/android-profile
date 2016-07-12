@@ -1,0 +1,9 @@
+<component name="libraryTable">
+  <library name="android-profile-twitter">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/twitter/libs/android-profile-twitter.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

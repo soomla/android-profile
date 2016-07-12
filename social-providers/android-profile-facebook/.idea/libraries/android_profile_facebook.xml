@@ -1,0 +1,9 @@
+<component name="libraryTable">
+  <library name="android-profile-facebook">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/facebook/libs/android-profile-facebook.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

@@ -1,0 +1,4 @@
+rootProject.name = 'soomla-android-profile'
+include 'SoomlaAndroidProfile'
+include 'SoomlaAndroidExample'
+

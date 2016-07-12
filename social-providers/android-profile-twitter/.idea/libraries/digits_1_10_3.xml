@@ -1,0 +1,12 @@
+<component name="libraryTable">
+  <library name="digits-1.10.3">
+    <CLASSES>
+      <root url="file://$PROJECT_DIR$/twitter/build/intermediates/exploded-aar/com.digits.sdk.android/digits/1.10.3/res" />
+      <root url="jar://$PROJECT_DIR$/twitter/build/intermediates/exploded-aar/com.digits.sdk.android/digits/1.10.3/jars/classes.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/com.digits.sdk.android/digits/1.10.3/f2b1370f7e87bcee595b475e1e42f64fc1064587/digits-1.10.3-sources.jar!/" />
+    </SOURCES>
+  </library>
+</component>

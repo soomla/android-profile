@@ -2,8 +2,9 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/android-profile-facebook.iml" filepath="$PROJECT_DIR$/.idea/android-profile-facebook.iml" />
+      <module fileurl="file://$PROJECT_DIR$/android-profile-facebook.iml" filepath="$PROJECT_DIR$/android-profile-facebook.iml" />
+      <module fileurl="file://$PROJECT_DIR$/facebook/app.iml" filepath="$PROJECT_DIR$/facebook/app.iml" />
+      <module fileurl="file://$PROJECT_DIR$/facebook/facebook.iml" filepath="$PROJECT_DIR$/facebook/facebook.iml" />
     </modules>
   </component>
 </project>
-

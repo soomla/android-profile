@@ -2,8 +2,8 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/android-profile-twitter.iml" filepath="$PROJECT_DIR$/.idea/android-profile-twitter.iml" />
+      <module fileurl="file://$PROJECT_DIR$/android-profile-twitter.iml" filepath="$PROJECT_DIR$/android-profile-twitter.iml" />
+      <module fileurl="file://$PROJECT_DIR$/twitter/twitter.iml" filepath="$PROJECT_DIR$/twitter/twitter.iml" />
     </modules>
   </component>
 </project>
-

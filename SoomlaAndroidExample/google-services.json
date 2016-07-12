@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "144389844148",
+    "project_id": "soomla-example-e1c2d"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:144389844148:android:912e3d92ed85b6e6",
+        "android_client_info": {
+          "package_name": "com.soomla.example"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "144389844148-f1gpvus7o54fbd146mbgj863glgrj6vt.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.soomla.example",
+            "certificate_hash": "4243D86F7A4E3C853B1351BD59A0871FA9CCCFC1"
+          }
+        },
+        {
+          "client_id": "144389844148-vtdgo4v3eibmo4helnhuvjclfdekdre5.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB79EnaWJ9NJliFSjD8xOmsX68d272rzTQ"
+        }
+      ],
+      "services": {
+        "analytics_service": {
+          "status": 1
+        },
+        "appinvite_service": {
+          "status": 1,
+          "other_platform_oauth_client": []
+        },
+        "ads_service": {
+          "status": 1
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

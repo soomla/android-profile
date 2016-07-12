@@ -1,9 +1,0 @@
-#!/bin/sh
-set -e
-DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
-cd $DIR
-
-./social-providers/android-profile-facebook/download_deps
-./social-providers/android-profile-google/download_deps
-./social-providers/android-profile-twitter/download_deps
-./SoomlaAndroidProfile/download_deps
